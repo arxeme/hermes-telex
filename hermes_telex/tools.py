@@ -1,0 +1,179 @@
+"""The ``telex`` agent tool: read-only Telex lookups (port of openclaw-telex
+tool.ts / tool-schema.ts). NOT for sending — use send_message(target="telex:...").
+Each action can be disabled per account under ``tools.<name>``.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from . import accounts as acct
+from . import config as cfg
+from .client import get_telex_client
+from .log import get_logger
+from .types import (
+    CONVERSATION_KIND_LABELS,
+    IDENTITY_KIND_LABELS,
+    MEMBER_ROLE_LABELS,
+    MESSAGE_STATUS_LABELS,
+    message_flag_labels,
+)
+
+logger = get_logger("tool")
+
+ACTIONS = (
+    "search_identities",
+    "get_identities",
+    "list_conversations",
+    "get_conversation_info",
+    "list_members",
+    "get_conversation_messages",
+)
+
+TELEX_TOOL_SCHEMA: dict[str, Any] = {
+    "name": "telex",
+    "description": (
+        "Read-only Telex lookups (identities/conversations/members/messages). "
+        'NOT for sending — use send_message(target="telex:<chat>") to reply. '
+        "Actions: search_identities, get_identities, list_conversations, "
+        "get_conversation_info, list_members, get_conversation_messages."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": list(ACTIONS)},
+            "query": {"type": "string", "description": "search_identities: name/email text"},
+            "ids": {"type": "array", "items": {"type": "string"}, "description": "get_identities: identity ids"},
+            "emails": {"type": "array", "items": {"type": "string"}, "description": "get_identities: emails"},
+            "kind": {"type": "integer", "description": "list_conversations: 0 chat, 1 channel"},
+            "offset": {"type": "integer"},
+            "limit": {"type": "integer", "description": "page size (1-100)"},
+            "conversation_id": {"type": "string", "description": "16-char hex id"},
+            "before_seq": {"type": "integer"},
+            "after_seq": {"type": "integer"},
+        },
+        "required": ["action"],
+    },
+}
+
+
+def _resolve_client_and_account():
+    """Prefer the live adapter's default runtime; fall back to env config."""
+    try:
+        from gateway.run import _gateway_runner_ref
+        from gateway.config import Platform
+        runner = _gateway_runner_ref()
+        adapter = runner.adapters.get(Platform("telex")) if runner else None
+        runtimes = getattr(adapter, "_runtimes", None) if adapter else None
+        if runtimes:
+            rt = next(iter(runtimes.values()))
+            return rt.client, rt.account
+    except Exception:  # noqa: BLE001
+        pass
+    extra = cfg.config_from_env()
+    if not extra:
+        return None, None
+    enabled = acct.list_enabled_accounts(extra)
+    if not enabled:
+        return None, None
+    a = enabled[0]
+    return get_telex_client(a.api_key, a.base_url, a.bot_id), a
+
+
+def _identity_out(i: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": i.get("id"),
+        "kind": IDENTITY_KIND_LABELS.get(i.get("kind"), i.get("kind")),
+        "display_name": i.get("display_name"),
+        "email": i.get("email"),
+        "online": i.get("online"),
+    }
+
+
+def _conversation_out(c: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": c.get("id"),
+        "kind": CONVERSATION_KIND_LABELS.get(c.get("kind"), c.get("kind")),
+        "title": c.get("title"),
+        "member_count": c.get("member_count"),
+        "last_seq": c.get("last_seq"),
+    }
+
+
+def _message_out(m: dict[str, Any]) -> dict[str, Any]:
+    from . import blocks
+    return {
+        "id": m.get("id"),
+        "seq": m.get("seq"),
+        "sender_id": m.get("sender_id"),
+        "status": MESSAGE_STATUS_LABELS.get(m.get("status"), m.get("status")),
+        "flags": message_flag_labels(m.get("flags", 0)),
+        "text": blocks.extract_text(m),
+    }
+
+
+async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
+    # The tool registry invokes handlers as handler(args, **kwargs) — e.g. task_id.
+    # Accept and ignore the extra kwargs.
+    action = (args or {}).get("action")
+    if action not in ACTIONS:
+        return json.dumps({"error": f"unknown action: {action}"})
+    client, account = _resolve_client_and_account()
+    if client is None:
+        return json.dumps({"error": "Telex not configured"})
+    if account is not None and not account.tools.get(action, True):
+        return json.dumps({"error": f"action '{action}' is disabled"})
+    try:
+        if action == "search_identities":
+            res = await client.search_identities(args.get("query", ""), args.get("limit"))
+            return json.dumps({"identities": [_identity_out(i) for i in res]})
+        if action == "get_identities":
+            res = await client.get_identities(args.get("ids") or [], args.get("emails") or [])
+            return json.dumps({"identities": [_identity_out(i) for i in res]})
+        if action == "list_conversations":
+            res = await client.list_conversations(
+                kind=args.get("kind"), offset=args.get("offset"), limit=args.get("limit") or 20
+            )
+            return json.dumps({
+                "conversations": [_conversation_out(c) for c in res["conversations"]],
+                "total": res["total"],
+            })
+        if action == "get_conversation_info":
+            conv = await client.get_conversation(args["conversation_id"], force_refresh=True)
+            return json.dumps({"conversation": _conversation_out(conv)})
+        if action == "list_members":
+            members = await client.list_members(args["conversation_id"])
+            idmap = await client.resolve_identities([m.get("identity_id") for m in members if m.get("identity_id")])
+            out = [{
+                "identity_id": m.get("identity_id"),
+                "role": MEMBER_ROLE_LABELS.get(m.get("role"), m.get("role")),
+                "display_name": idmap.get(m.get("identity_id"), {}).get("display_name"),
+                "email": idmap.get(m.get("identity_id"), {}).get("email"),
+            } for m in members]
+            return json.dumps({"members": out})
+        if action == "get_conversation_messages":
+            msgs = await client.list_messages(
+                args["conversation_id"], before_seq=args.get("before_seq"),
+                after_seq=args.get("after_seq"), limit=args.get("limit") or 50,
+            )
+            msgs = sorted(msgs, key=lambda m: m.get("seq", 0))
+            return json.dumps({"messages": [_message_out(m) for m in msgs]})
+    except KeyError as exc:
+        return json.dumps({"error": f"missing required arg: {exc}"})
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": str(exc)})
+    return json.dumps({"error": "unhandled action"})
+
+
+def register_telex_tool(ctx) -> None:
+    ctx.register_tool(
+        name="telex",
+        toolset="telex",
+        schema=TELEX_TOOL_SCHEMA,
+        handler=telex_tool_handler,
+        check_fn=lambda: True,
+        is_async=True,
+        description="Read-only Telex lookups (identities/conversations/members/messages).",
+        emoji="📨",
+    )

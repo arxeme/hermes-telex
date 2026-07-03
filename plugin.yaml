@@ -1,0 +1,17 @@
+name: telex-platform
+kind: platform
+version: 1.0.0
+description: >
+  Voyager Telex messaging platform adapter for Hermes Agent.
+  Supports 1:1 chats and channels over a single subscribe stream,
+  using a Telex bot API key. Feature parity with openclaw-telex.
+author: AI Agent Team
+requires_env:
+  - name: TELEX_API_KEY
+    description: Telex bot API key (X-API-Key); shown once at register/rotate.
+    secret: true
+optional_env:
+  - name: TELEX_BASE_URL
+    description: Telex base URL (default https://voyager.ingarena.net)
+provides_tools:
+  - telex
