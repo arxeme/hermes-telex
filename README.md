@@ -30,11 +30,25 @@ hermes-telex/
 
 ## Install
 
+Install the plugin from GitHub, enable its platform id, and restart the gateway:
+
 ```bash
-git clone <hermes-telex repo> ~/.hermes/plugins/telex
-hermes plugins enable telex-platform
-hermes gateway run
+hermes plugins install arxeme/hermes-telex --enable && hermes gateway restart
 ```
+
+`hermes plugins install arxeme/hermes-telex --enable` clones the plugin into the
+user plugin directory and records `telex-platform` as enabled in Hermes
+configuration. The plugin loads and `register(ctx)` runs when a Hermes process
+starts or performs plugin discovery. Restart the gateway after changing Telex
+configuration:
+
+```bash
+hermes gateway restart
+```
+
+If your Hermes installation does not provide `hermes gateway restart`, stop the
+running gateway process and start it again with the command normally used in
+that deployment.
 
 ## Get a bot API key
 
