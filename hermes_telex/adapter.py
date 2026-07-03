@@ -76,7 +76,9 @@ class TelexAccountRuntime:
     client: TelexClient
     dispatcher: TelexDispatcher | None = None
     monitor_task: asyncio.Task | None = None
-    stop_event: asyncio.Event = field(default_factory=asyncio.Event)
+    # Created in connect() (inside the running loop) — never eagerly in the
+    # sync constructor, where no event loop may exist.
+    stop_event: asyncio.Event | None = None
 
 
 class TelexAdapter(BasePlatformAdapter):
@@ -123,7 +125,8 @@ class TelexAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         for rt in self._runtimes.values():
-            rt.stop_event.set()
+            if rt.stop_event is not None:
+                rt.stop_event.set()
             if rt.monitor_task and not rt.monitor_task.done():
                 rt.monitor_task.cancel()
                 try:
