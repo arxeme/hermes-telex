@@ -87,12 +87,33 @@ class TelexClient:
         self._conversation_cache = _TTLCache(CONVERSATION_CACHE_MAX, CACHE_TTL_S)
         self._identity_cache = _TTLCache(IDENTITY_CACHE_MAX, CACHE_TTL_S)
         self._session: aiohttp.ClientSession | None = None
+        self._session_loop: asyncio.AbstractEventLoop | None = None
 
     # -- session lifecycle --------------------------------------------------
 
     def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
+        """Return a ClientSession bound to the CURRENT running loop.
+
+        The tool registry runs async handlers in a fresh event loop when called
+        from sync contexts; an aiohttp session cannot be reused across loops
+        ("Timeout context manager should be used inside a task"). Recreate the
+        session whenever the running loop changed, best-effort closing the old
+        one on its own loop.
+        """
+        loop = asyncio.get_event_loop()
+        if (
+            self._session is None
+            or self._session.closed
+            or self._session_loop is not loop
+        ):
+            old, old_loop = self._session, self._session_loop
+            if old is not None and not old.closed and old_loop is not None and not old_loop.is_closed():
+                try:
+                    old_loop.call_soon_threadsafe(lambda: old_loop.create_task(old.close()))
+                except RuntimeError:
+                    pass  # old loop already gone; session is GC'd
             self._session = aiohttp.ClientSession()
+            self._session_loop = loop
         return self._session
 
     async def close(self) -> None:

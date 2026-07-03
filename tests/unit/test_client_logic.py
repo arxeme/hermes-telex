@@ -49,3 +49,22 @@ def test_turn_seq():
     c.note_turn_seq("conv", 3)
     c.note_turn_seq("conv", 2)
     assert c.get_last_turn_seq("conv") == 3
+
+
+def test_session_recreated_per_event_loop():
+    # Regression: tool registry runs handlers in fresh event loops; a session
+    # bound to another loop must not be reused ("Timeout context manager
+    # should be used inside a task").
+    import asyncio
+    import warnings
+
+    c = _c()
+
+    async def grab():
+        return c._get_session()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # unclosed-session noise from loop 1
+        s1 = asyncio.run(grab())
+        s2 = asyncio.run(grab())
+    assert s1 is not s2
