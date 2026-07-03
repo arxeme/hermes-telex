@@ -117,9 +117,15 @@ if git -C "$TMP_WORKTREE" diff --cached --quiet 2>/dev/null; then
     echo "No changes — publish branch is already up to date."
     echo "HEAD : $RELEASE_COMMIT"
 else
-    COMMIT_MSG="${COMMIT_MESSAGE:-publish: publish runtime plugin files}"
-    if [[ -z "$COMMIT_MESSAGE" && -n "$VERSION" ]]; then
-        COMMIT_MSG="$COMMIT_MSG ($VERSION)"
+    # Prefer an explicit --message (constructed per the commit convention,
+    # summarizing this release). Fall back to the hermes-seatalk-style header.
+    COMMIT_MSG="${COMMIT_MESSAGE:-}"
+    if [[ -z "$COMMIT_MSG" ]]; then
+        if [[ -n "$VERSION" ]]; then
+            COMMIT_MSG="publish: release $VERSION runtime plugin"
+        else
+            COMMIT_MSG="publish: release runtime plugin"
+        fi
     fi
     git -C "$TMP_WORKTREE" commit -q -m "$COMMIT_MSG"
     RELEASE_COMMIT="$(git -C "$TMP_WORKTREE" rev-parse HEAD)"
