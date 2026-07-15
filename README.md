@@ -72,7 +72,7 @@ platforms:
     extra:
       api_key: "<plaintext bot api key>"
       base_url: "https://voyager.ingarena.net"
-      bot_id: "0a1b2c3d4e5f6071"        # optional; hardens self-echo suppression
+      bot_id: "0a1b2c3d4e5f6071"        # optional override; identity is resolved via get-identity at connect
       dm_policy: allowlist               # open | allowlist | pairing
       allow_from: ["alice@company.com", "0a1b2c3d4e5f6071"]
       group_policy: disabled             # disabled | allowlist | open
@@ -85,7 +85,9 @@ platforms:
         get_identities: true
         list_conversations: true
         get_conversation_info: true
+        create_channel: true
         list_members: true
+        add_members: true
         get_conversation_messages: true
       accounts:                          # optional multi-bot
         support:
@@ -128,18 +130,27 @@ hook; YAML is the full-featured (multi-account) config.
   gaps per conversation with `list-messages(after_seq)`.
 - **Outbound** posts text blocks to `send-message` (chunked, one-shot COMPLETED),
   with a `processing` activity indicator while the agent runs.
-- **Media** flows through the OpenAPI file endpoints (`upload-file`/`download-file`,
-  ≤ 20 MiB). Inbound image/file blocks are auto-downloaded into the Hermes cache
-  and handed to the agent; outbound attachments are uploaded and sent as media blocks.
+- **Outbound mentions** are inline tokens in the text: `[@](mention:<identity_id>)`
+  or `[@all](mention:all)`; the server derives the targets from them and fills in the
+  target's real display name. The plugin teaches the agent this syntax via the
+  platform hint, exposes sender ids in message context, and puts a ready-to-paste
+  `mention` token in `telex` tool identity results.
+- **Media** flows through the OpenAPI file endpoints (`upload-file`, ≤ 20 MiB;
+  `download-file` is unauthenticated by design - the encrypted file id is the
+  capability). Inbound image/file blocks are auto-downloaded into the Hermes cache
+  and handed to the agent; media in history/backfill context is passed as public
+  download links; outbound attachments are uploaded and sent as media blocks.
 - **Self-echo suppression**: the subscribe stream fans the bot's own messages back
-  to it, so the plugin drops messages from its own identity (learned from `bot_id`
-  and every send response).
+  to it, so the plugin drops messages from its own identity (resolved via
+  `get-identity` at connect; `bot_id` overrides, and send responses confirm it).
 
 ## Agent tool
 
-When enabled, a read-only `telex` tool lets the agent inspect Telex:
+When enabled, a `telex` tool lets the agent inspect Telex and manage channels:
 `search_identities`, `get_identities`, `list_conversations`, `get_conversation_info`,
-`list_members`, `get_conversation_messages`. Each can be disabled under
+`create_channel`, `list_members`, `add_members`, `get_conversation_messages`.
+Member emails resolve all-or-nothing: any unresolved email fails the call before
+anything is created or added. Each can be disabled under
 `platforms.telex.extra.tools`. It is **not** for sending — use
 `send_message(target="telex:<chat>")`.
 
@@ -180,8 +191,9 @@ python -m pytest -q
 
 - **No threads.** Each Telex conversation maps to one agent session.
 - **Media ≤ 20 MiB** (server upload cap); inbound media is auto-downloaded.
-- Reconnect backfill uses in-memory per-conversation cursors: a transient
-  disconnect is recovered, but a full process restart starts cold.
+- Reconnect backfill floors at the in-memory cursor, falling back to the
+  server-persisted read cursor (mark-read), so a full process restart resumes
+  from where processing stopped.
 - Gateway pairing is per-platform, so multi-account + pairing shares one approval
   namespace.
 - Outbound is one-shot COMPLETED (matching openclaw-telex); native streaming

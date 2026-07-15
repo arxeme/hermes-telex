@@ -294,7 +294,7 @@ def _telex_env_enablement() -> dict | None:
 async def _telex_standalone_send(pconfig, chat_id, message, *, thread_id=None,
                                  media_files=None, force_document=False) -> dict:
     """Out-of-process delivery for cron jobs (no live adapter). thread_id ignored."""
-    del thread_id, force_document
+    del thread_id
     extra = _extra(pconfig)
     enabled = acct.list_enabled_accounts(extra)
     if not enabled:
@@ -335,7 +335,12 @@ def _kind_for(path: str) -> str:
 
 _TELEX_PLATFORM_HINT = (
     "You are chatting via Telex (Voyager's chat product). Markdown is supported. "
-    "In channels you are addressed by @-mention; in direct chats every message is for you. "
+    "To @-mention someone, write the inline token [@](mention:<identity_id>) "
+    "(16-char hex id from the telex tool or message context); [@all](mention:all) notifies "
+    "everyone; the server fills in the display name. Plain @name text does not notify anyone. "
+    "Text replies deliver automatically. To send a file or image, write MEDIA:<absolute path> "
+    "on its own line (works in a plain reply and in send_message text). To message a different "
+    'conversation, call send_message with target "telex:<conversation id>". '
     "Keep replies concise and conversational."
 )
 

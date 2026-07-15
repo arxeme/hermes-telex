@@ -1,8 +1,9 @@
 """Telex OpenAPI HTTP client (async, aiohttp).
 
 Faithful port of openclaw-telex/src/client.ts: identities/conversations/
-messages/files endpoints, LRU+TTL caches, self-echo suppression, per-conversation
-backfill watermark, dedup, and the NDJSON subscribe stream reader.
+messages/files endpoints, LRU+TTL caches, self-echo suppression, the
+per-conversation message-sync state (cursor / settled / poison), and the NDJSON
+subscribe stream reader.
 
 All requests carry the ``X-API-Key`` header. The API key is never logged.
 """
@@ -11,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from collections import OrderedDict
 from typing import Any, Awaitable, Callable
@@ -18,7 +20,7 @@ from typing import Any, Awaitable, Callable
 import aiohttp
 
 from .log import get_logger, mask_key
-from .types import OPENAPI_PREFIX, MessageStatus
+from .types import OPENAPI_PREFIX
 
 logger = get_logger("client")
 
@@ -28,16 +30,44 @@ SENT_IDS_MAX = 2000
 IDENTITY_CACHE_MAX = 2000
 CONVERSATION_CACHE_MAX = 2000
 CACHE_TTL_S = 10 * 60
+MARK_READ_DEBOUNCE_S = 3.0
 
 
 class TelexError(Exception):
     """A Telex API error carrying the HTTP status and stable gRPC code/message."""
 
-    def __init__(self, message: str, *, http_status: int | None = None, code: int | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        http_status: int | None = None,
+        code: int | None = None,
+        api_message: str | None = None,
+    ):
         super().__init__(message)
         self.http_status = http_status
         self.code = code
         self.telex_message = message
+        # The stable body identifier (e.g. not_a_member, insufficient_scope):
+        # 403/404 alone cannot distinguish configuration errors from lost
+        # memberships, so callers branch on this.
+        self.api_message = api_message
+
+
+# In-stream error frames carry only the stable body code (no HTTP status), so
+# classification must not require a status match.
+def conversation_gone(exc: Exception) -> bool:
+    if not isinstance(exc, TelexError):
+        return False
+    return exc.api_message in ("not_a_member", "conversation_not_found")
+
+
+def auth_error(exc: Exception) -> bool:
+    if not isinstance(exc, TelexError):
+        return False
+    return exc.http_status == 401 or exc.api_message in (
+        "insufficient_scope", "invalid_api_key", "api_key_empty",
+    )
 
 
 def _lru_set(d: OrderedDict, key: Any, value: Any, max_size: int) -> None:
@@ -78,48 +108,55 @@ class TelexClient:
         # Echo suppression: subscribe fans the bot's own sends back to it.
         self._self_id: str | None = (bot_id or "").strip() or None
         self._sent_message_ids: OrderedDict[str, bool] = OrderedDict()
-        # Per-conversation backfill watermark: {settled, pending:set}.
-        self._cursors: dict[str, dict[str, Any]] = {}
+        # Per-conversation message-sync state: cursor = local cache of the server
+        # read_seq (everything at or below it is settled), settled = the disposed
+        # seqs above it, poison = handle failure counts.
+        self._sync: dict[str, dict[str, Any]] = {}
+        self._read_sync_tasks: dict[str, asyncio.Task] = {}
         # Highest seq that entered an agent turn (mention-gap backfill).
         self._last_turn_seq: dict[str, int] = {}
-        # Dedup of dispatched message ids (at-least-once delivery).
-        self._processed_ids: OrderedDict[str, bool] = OrderedDict()
         self._conversation_cache = _TTLCache(CONVERSATION_CACHE_MAX, CACHE_TTL_S)
         self._identity_cache = _TTLCache(IDENTITY_CACHE_MAX, CACHE_TTL_S)
-        self._session: aiohttp.ClientSession | None = None
-        self._session_loop: asyncio.AbstractEventLoop | None = None
+        # One aiohttp session per event loop: hermes may drive the plugin from
+        # several loops concurrently, and a session is bound to its creating loop.
+        # Those loops live on different threads, so the registry needs a lock.
+        self._sessions: dict[asyncio.AbstractEventLoop, aiohttp.ClientSession] = {}
+        self._sessions_lock = threading.Lock()
 
     # -- session lifecycle --------------------------------------------------
 
     def _get_session(self) -> aiohttp.ClientSession:
-        """Return a ClientSession bound to the CURRENT running loop.
+        """Return a ClientSession bound to the current running loop.
 
-        The tool registry runs async handlers in a fresh event loop when called
-        from sync contexts; an aiohttp session cannot be reused across loops
-        ("Timeout context manager should be used inside a task"). Recreate the
-        session whenever the running loop changed, best-effort closing the old
-        one on its own loop.
+        An aiohttp session is tied to the loop it was created on, and hermes may
+        call the plugin from more than one loop concurrently (the gateway monitor
+        loop plus tool-execution loops). Keep one session per loop so concurrent
+        loops never close each other's connections; drop sessions whose loop has
+        closed so one-shot loops don't leak.
         """
-        loop = asyncio.get_event_loop()
-        if (
-            self._session is None
-            or self._session.closed
-            or self._session_loop is not loop
-        ):
-            old, old_loop = self._session, self._session_loop
-            if old is not None and not old.closed and old_loop is not None and not old_loop.is_closed():
-                try:
-                    old_loop.call_soon_threadsafe(lambda: old_loop.create_task(old.close()))
-                except RuntimeError:
-                    pass  # old loop already gone; session is GC'd
-            self._session = aiohttp.ClientSession()
-            self._session_loop = loop
-        return self._session
+        loop = asyncio.get_running_loop()
+        with self._sessions_lock:
+            for dead in [lp for lp in self._sessions if lp.is_closed()]:
+                self._sessions.pop(dead, None)
+            session = self._sessions.get(loop)
+            if session is None or session.closed:
+                session = aiohttp.ClientSession()
+                self._sessions[loop] = session
+            return session
 
     async def close(self) -> None:
-        if self._session is not None and not self._session.closed:
-            await self._session.close()
-        self._session = None
+        for task in self._read_sync_tasks.values():
+            task.cancel()
+        self._read_sync_tasks.clear()
+        with self._sessions_lock:
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+        for session in sessions:
+            if not session.closed:
+                try:
+                    await session.close()
+                except RuntimeError:
+                    pass  # session bound to another/closed loop; drop it
 
     # -- core HTTP ----------------------------------------------------------
 
@@ -137,8 +174,14 @@ class TelexClient:
             data = json.loads(text) if text else {}
             if res.status >= 400:
                 code = data.get("code") if isinstance(data, dict) else None
-                message = (data.get("message") if isinstance(data, dict) else None) or f"HTTP {res.status}"
-                raise TelexError(f"Telex API error: {message}", http_status=res.status, code=code)
+                api_message = data.get("message") if isinstance(data, dict) else None
+                message = api_message or f"HTTP {res.status}"
+                raise TelexError(
+                    f"Telex API error: {message}",
+                    http_status=res.status,
+                    code=code,
+                    api_message=api_message,
+                )
             return data if isinstance(data, dict) else {}
 
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -165,13 +208,9 @@ class TelexClient:
         peer_id: str | None = None,
         message_id: str | None = None,
         blocks: list[dict[str, Any]],
-        mention_ids: list[str] | None = None,
         status: int | None = None,
     ) -> dict[str, Any]:
-        data: dict[str, Any] = {"blocks": blocks}
-        if mention_ids:
-            data["mention_ids"] = mention_ids
-        body: dict[str, Any] = {"data": data}
+        body: dict[str, Any] = {"data": {"blocks": blocks}}
         if conversation_id:
             body["conversation_id"] = conversation_id
         if peer_id:
@@ -187,6 +226,45 @@ class TelexClient:
 
     async def set_activity(self, conversation_id: str, status: str) -> None:
         await self._post("/set-activity", {"conversation_id": conversation_id, "status": status})
+
+    # Marking: push the watermark (the contiguous settled prefix from the cursor)
+    # to the server, then adopt the effective cursor it returns.
+    async def sync_read_cursor(self, conversation_id: str) -> None:
+        state = self._sync.get(conversation_id)
+        if state is None:
+            return
+        watermark = state["cursor"]
+        while watermark + 1 in state["settled"]:
+            watermark += 1
+        if watermark <= state["cursor"]:
+            return
+        res = await self._post("/mark-read", {"conversation_id": conversation_id, "read_seq": watermark})
+        self.update_cursor(conversation_id, res.get("read_seq") or watermark)
+
+    # Keep-first debounce: an armed timer is never reset, so marks land every
+    # ~3s under continuous traffic. Failures wait for the next settle or repair.
+    def schedule_read_sync(self, conversation_id: str) -> None:
+        existing = self._read_sync_tasks.get(conversation_id)
+        if existing and not existing.done():
+            return
+
+        async def run() -> None:
+            try:
+                await asyncio.sleep(MARK_READ_DEBOUNCE_S)
+                await self.sync_read_cursor(conversation_id)
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:  # noqa: BLE001
+                if conversation_gone(exc):
+                    self.drop_conversation(conversation_id)
+                elif auth_error(exc):
+                    logger.error(
+                        "read-cursor sync rejected: check key scopes conversation=%s: %s", conversation_id, exc
+                    )
+                else:
+                    logger.warning("read-cursor sync failed conversation=%s: %s", conversation_id, exc)
+
+        self._read_sync_tasks[conversation_id] = asyncio.create_task(run())
 
     async def list_messages(
         self,
@@ -216,26 +294,36 @@ class TelexClient:
             text = await res.text()
             body = json.loads(text) if text else {}
             if res.status >= 400:
-                message = (body.get("message") if isinstance(body, dict) else None) or f"HTTP {res.status}"
-                raise TelexError(f"Telex upload error: {message}", http_status=res.status)
+                api_message = body.get("message") if isinstance(body, dict) else None
+                raise TelexError(
+                    f"Telex upload error: {api_message or f'HTTP {res.status}'}",
+                    http_status=res.status,
+                    code=body.get("code") if isinstance(body, dict) else None,
+                    api_message=api_message,
+                )
             return body if isinstance(body, dict) else {}
 
-    async def download_file(
-        self, file_id: str, *, conversation_id: str | None = None, message_id: str | None = None,
-    ) -> tuple[bytes, str]:
-        from urllib.parse import urlencode
-        params = {"file_id": file_id}
-        if conversation_id:
-            params["conversation_id"] = conversation_id
-        if message_id:
-            params["message_id"] = message_id
-        url = f"{self.base_url}{OPENAPI_PREFIX}/download-file?{urlencode(params)}"
+    def file_download_url(self, file_id: str) -> str:
+        from urllib.parse import quote
+        return f"{self.base_url}{OPENAPI_PREFIX}/download-file?file_id={quote(file_id)}"
+
+    async def download_file(self, file_id: str) -> tuple[bytes, str]:
         timeout = aiohttp.ClientTimeout(total=FILE_TIMEOUT_S)
         session = self._get_session()
-        async with session.get(url, headers={"x-api-key": self.api_key}, timeout=timeout) as res:
+        async with session.get(self.file_download_url(file_id), timeout=timeout) as res:
             if res.status >= 400:
                 detail = await res.text()
-                raise TelexError(f"Telex download error: HTTP {res.status} {detail}", http_status=res.status)
+                api_message = None
+                try:
+                    parsed = json.loads(detail)
+                    api_message = parsed.get("message") if isinstance(parsed, dict) else None
+                except ValueError:
+                    pass  # non-JSON error body; classification falls back to the status
+                raise TelexError(
+                    f"Telex download error: HTTP {res.status} {detail}",
+                    http_status=res.status,
+                    api_message=api_message,
+                )
             content_type = res.headers.get("content-type", "application/octet-stream")
             buf = await res.read()
             return buf, content_type
@@ -249,6 +337,10 @@ class TelexClient:
                 return cached
         res = await self._get("/get-conversation", {"conversation_id": conversation_id})
         conversation = res.get("conversation", {})
+        self.arm_self_id((conversation.get("membership") or {}).get("identity_id"))
+        # Unlike client.ts, no sync-state adoption here: hermes tool calls run
+        # on other worker threads, and mutating the sync collections outside
+        # the driver's conversation lock races the monitor loop.
         self._conversation_cache.set(conversation_id, conversation)
         return conversation
 
@@ -256,10 +348,24 @@ class TelexClient:
         self, *, kind: int | None = None, offset: int | None = None, limit: int | None = None,
     ) -> dict[str, Any]:
         res = await self._get("/list-conversations", {"kind": kind, "offset": offset, "limit": limit})
-        return {"conversations": res.get("conversations") or [], "total": res.get("total") or 0}
+        conversations = res.get("conversations") or []
+        for conversation in conversations:
+            identity_id = (conversation.get("membership") or {}).get("identity_id")
+            if identity_id:
+                self.arm_self_id(identity_id)
+                break
+        return {"conversations": conversations, "total": res.get("total") or 0}
+
+    async def create_channel(self, title: str, identity_ids: list[str]) -> dict[str, Any]:
+        res = await self._post("/create-channel", {"title": title, "identity_ids": identity_ids})
+        return res.get("conversation", {})
 
     async def list_members(self, conversation_id: str) -> list[dict[str, Any]]:
         res = await self._get("/list-members", {"conversation_id": conversation_id})
+        return res.get("members") or []
+
+    async def add_members(self, conversation_id: str, identity_ids: list[str]) -> list[dict[str, Any]]:
+        res = await self._post("/add-members", {"conversation_id": conversation_id, "identity_ids": identity_ids})
         return res.get("members") or []
 
     async def search_identities(self, query: str, limit: int | None = None) -> list[dict[str, Any]]:
@@ -314,7 +420,18 @@ class TelexClient:
         async with session.get(url, headers=headers, timeout=timeout) as res:
             if res.status != 200:
                 detail = await res.text()
-                raise TelexError(f"Telex subscribe failed: HTTP {res.status} {detail}", http_status=res.status)
+                api_message: str | None = None
+                try:
+                    parsed_detail = json.loads(detail)
+                    if isinstance(parsed_detail, dict):
+                        api_message = parsed_detail.get("message")
+                except json.JSONDecodeError:
+                    pass
+                raise TelexError(
+                    f"Telex subscribe failed: HTTP {res.status} {detail}",
+                    http_status=res.status,
+                    api_message=api_message,
+                )
             buffer = ""
             async for chunk in res.content.iter_any():
                 if stop_event is not None and stop_event.is_set():
@@ -335,7 +452,8 @@ class TelexClient:
                     if isinstance(parsed, dict) and parsed.get("error"):
                         err = parsed["error"]
                         msg = err.get("message", "unknown") if isinstance(err, dict) else "unknown"
-                        raise TelexError(f"Telex subscribe stream error: {msg}")
+                        code = err.get("code") if isinstance(err, dict) else None
+                        raise TelexError(f"Telex subscribe stream error: {msg}", code=code, api_message=msg)
                     if isinstance(parsed, dict) and "result" in parsed:
                         result = on_event(parsed["result"])
                         if asyncio.iscoroutine(result):
@@ -356,6 +474,16 @@ class TelexClient:
         if trimmed:
             self._self_id = trimmed
 
+    # Without it, backfilled own messages dispatch as inbound and channel
+    # mentions are settled as ineligible until the first send reveals the id.
+    async def ensure_self_id(self) -> None:
+        if self._self_id:
+            return
+        res = await self._get("/get-identity")
+        identity = res.get("identity") or {}
+        if identity.get("id"):
+            self._self_id = identity["id"]
+
     @property
     def self_id(self) -> str | None:
         return self._self_id
@@ -373,26 +501,73 @@ class TelexClient:
             return False
         return self._self_id in (data.get("mention_ids") or [])
 
-    def note_message(self, conversation_id: str, seq: int, terminal: bool) -> None:
-        entry = self._cursors.get(conversation_id)
-        if entry is None:
-            entry = {"settled": seq - 1, "pending": set()}
-            self._cursors[conversation_id] = entry
-        if terminal:
-            if seq > entry["settled"]:
-                entry["settled"] = seq
-            entry["pending"].discard(seq)
-        else:
-            entry["pending"].add(seq)
+    def is_seeded(self, conversation_id: str) -> bool:
+        return conversation_id in self._sync
 
-    def get_backfill_targets(self) -> list[dict[str, Any]]:
-        out = []
-        for conversation_id, entry in self._cursors.items():
-            after_seq = entry["settled"]
-            for seq in entry["pending"]:
-                after_seq = min(after_seq, seq - 1)
-            out.append({"conversation_id": conversation_id, "after_seq": after_seq})
-        return out
+    def seed_conversation(self, conversation_id: str, cursor: int, max_seen: int) -> None:
+        state = self._sync.get(conversation_id)
+        if state is None:
+            state = {"cursor": 0, "settled": set(), "max_seen": 0, "poison": {}}
+            self._sync[conversation_id] = state
+        self.update_cursor(conversation_id, cursor)
+        state["max_seen"] = max(state["max_seen"], max_seen)
+
+    # The single entry point for cursor updates: advance, then prune both tables.
+    def update_cursor(self, conversation_id: str, value: int) -> None:
+        state = self._sync.get(conversation_id)
+        if state is None or value <= state["cursor"]:
+            return
+        state["cursor"] = value
+        state["settled"] = {seq for seq in state["settled"] if seq > value}
+        state["poison"] = {seq: n for seq, n in state["poison"].items() if seq > value}
+
+    def get_cursor(self, conversation_id: str) -> int:
+        state = self._sync.get(conversation_id)
+        return state["cursor"] if state else 0
+
+    def is_disposed(self, conversation_id: str, seq: int) -> bool:
+        state = self._sync.get(conversation_id)
+        return state is None or seq <= state["cursor"] or seq in state["settled"]
+
+    def settle(self, conversation_id: str, seq: int) -> None:
+        state = self._sync.get(conversation_id)
+        if state is None:
+            return
+        if seq > state["cursor"]:
+            state["settled"].add(seq)
+        state["max_seen"] = max(state["max_seen"], seq)
+
+    def observe_seq(self, conversation_id: str, seq: int) -> None:
+        state = self._sync.get(conversation_id)
+        if state is not None:
+            state["max_seen"] = max(state["max_seen"], seq)
+
+    def is_lagging(self, conversation_id: str) -> bool:
+        state = self._sync.get(conversation_id)
+        return bool(state) and state["cursor"] < state["max_seen"]
+
+    # Returns the new count; the caller logs the give-up exactly when it reaches N.
+    def bump_poison(self, conversation_id: str, seq: int) -> int:
+        state = self._sync.get(conversation_id)
+        if state is None or seq <= state["cursor"]:
+            return 0
+        count = state["poison"].get(seq, 0) + 1
+        state["poison"][seq] = count
+        return count
+
+    def poison_count(self, conversation_id: str, seq: int) -> int:
+        state = self._sync.get(conversation_id)
+        return state["poison"].get(seq, 0) if state else 0
+
+    def known_conversations(self) -> list[str]:
+        return list(self._sync)
+
+    def drop_conversation(self, conversation_id: str) -> None:
+        self._sync.pop(conversation_id, None)
+        self._last_turn_seq.pop(conversation_id, None)
+        task = self._read_sync_tasks.pop(conversation_id, None)
+        if task and not task.done():
+            task.cancel()
 
     def note_turn_seq(self, conversation_id: str, seq: int) -> None:
         if seq > self._last_turn_seq.get(conversation_id, 0):
@@ -400,12 +575,6 @@ class TelexClient:
 
     def get_last_turn_seq(self, conversation_id: str) -> int | None:
         return self._last_turn_seq.get(conversation_id)
-
-    def mark_processed(self, message_id: str) -> bool:
-        if message_id in self._processed_ids:
-            return False
-        _lru_set(self._processed_ids, message_id, True, SENT_IDS_MAX)
-        return True
 
 
 _client_cache: dict[str, TelexClient] = {}

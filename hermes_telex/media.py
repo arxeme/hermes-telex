@@ -76,11 +76,20 @@ def _ext_for(name: str, content_type: str, kind: str) -> str:
     return {"image": ".jpg", "video": ".mp4", "audio": ".ogg", "document": ".bin"}.get(kind, ".bin")
 
 
-async def resolve_inbound_media(
-    client, conversation_id: str, message_id: str, media_blocks: list[dict[str, Any]],
-) -> list[InboundMedia]:
-    """Download each inbound media block and cache it. Failures are skipped."""
+def media_markdown_link(client, entry: dict[str, Any]) -> str:
+    media = entry.get("media") or {}
+    file_id = media.get("file_id")
+    kind = entry.get("kind", "document")
+    name = media.get("name") or kind
+    if not file_id:
+        return f"[{_PLACEHOLDER.get(kind, 'file')}: {name}]"
+    url = client.file_download_url(file_id)
+    return f"![{name}]({url})" if kind == "image" else f"[{name}]({url})"
+
+
+async def resolve_inbound_media(client, media_blocks: list[dict[str, Any]]) -> tuple[list[InboundMedia], list[str]]:
     out: list[InboundMedia] = []
+    links: list[str] = []
     for entry in media_blocks:
         kind = entry["kind"]
         media = entry["media"] or {}
@@ -89,14 +98,14 @@ async def resolve_inbound_media(
             continue
         name = media.get("name") or file_id
         try:
-            data, content_type = await client.download_file(
-                file_id, conversation_id=conversation_id, message_id=message_id
-            )
+            data, content_type = await client.download_file(file_id)
         except Exception as exc:  # noqa: BLE001 - don't block dispatch on media failure
             logger.warning("inbound media download failed file_id=%s: %s", file_id, exc)
+            links.append(media_markdown_link(client, entry))
             continue
         if len(data) > MAX_MEDIA_BYTES:
             logger.warning("inbound media too large file_id=%s size=%d", file_id, len(data))
+            links.append(media_markdown_link(client, entry))
             continue
         mime = media.get("mime") or content_type
         ext = _ext_for(name, mime, kind)
@@ -111,9 +120,10 @@ async def resolve_inbound_media(
                 path = cache_document_from_bytes(data, name)
         except Exception as exc:  # noqa: BLE001
             logger.warning("caching inbound media failed file_id=%s: %s", file_id, exc)
+            links.append(media_markdown_link(client, entry))
             continue
         out.append(InboundMedia(path=path, content_type=mime, kind=kind, name=name))
-    return out
+    return out, links
 
 
 def read_outbound_file(path: str) -> tuple[bytes, str, str]:
