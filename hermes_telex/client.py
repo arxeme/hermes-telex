@@ -100,6 +100,9 @@ class _TTLCache:
     def set(self, key: str, value: Any) -> None:
         _lru_set(self._d, key, (value, time.monotonic() + self._ttl), self._max)
 
+    def delete(self, key: str) -> None:
+        self._d.pop(key, None)
+
 
 class TelexClient:
     def __init__(self, api_key: str, base_url: str, bot_id: str | None = None):
@@ -370,6 +373,12 @@ class TelexClient:
         res = await self._post("/create-chat", body)
         return res.get("conversation", {})
 
+    async def rename_conversation(self, conversation_id: str, title: str) -> dict[str, Any]:
+        res = await self._post("/rename-conversation", {"conversation_id": conversation_id, "title": title})
+        # The refresh hook never sees a self-initiated rename: own messages are filtered before it.
+        self._conversation_cache.delete(conversation_id)
+        return res.get("conversation") or {}
+
     async def list_members(self, conversation_id: str) -> list[dict[str, Any]]:
         res = await self._get("/list-members", {"conversation_id": conversation_id})
         return res.get("members") or []
@@ -406,6 +415,14 @@ class TelexClient:
 
     async def resolve_identity(self, ident_id: str) -> dict[str, Any] | None:
         return (await self.resolve_identities([ident_id])).get(ident_id)
+
+    async def update_identity(self, display_name: str | None = None, description: str | None = None) -> dict[str, Any]:
+        body = {k: v for k, v in (("display_name", display_name), ("description", description)) if v is not None}
+        res = await self._post("/update-identity", body)
+        identity = res.get("identity", {})
+        if identity.get("id"):
+            self._identity_cache.set(identity["id"], identity)
+        return identity
 
     # -- subscribe ----------------------------------------------------------
 
