@@ -18,9 +18,11 @@ PROCESSING_INDICATORS = {"activity", "off"}
 TOOL_KEYS = (
     "search_identities",
     "get_identities",
+    "update_identity",
     "list_conversations",
     "get_conversation_info",
     "create_channel",
+    "rename_conversation",
     "list_members",
     "add_members",
     "get_conversation_messages",
