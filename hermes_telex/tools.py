@@ -33,9 +33,11 @@ logger = get_logger("tool")
 ACTIONS = (
     "search_identities",
     "get_identities",
+    "update_identity",
     "list_conversations",
     "get_conversation_info",
     "create_channel",
+    "rename_conversation",
     "list_members",
     "add_members",
     "get_conversation_messages",
@@ -47,17 +49,19 @@ TELEX_TOOL_SCHEMA: dict[str, Any] = {
     "description": (
         "Telex lookups, channel management and sending "
         "(identities/conversations/members/messages). "
-        "Actions: search_identities, get_identities, list_conversations, "
-        "get_conversation_info, create_channel, list_members, "
-        "add_members, get_conversation_messages, send_message. "
+        "Actions: search_identities, get_identities, update_identity, "
+        "list_conversations, get_conversation_info, create_channel, rename_conversation, "
+        "list_members, add_members, get_conversation_messages, send_message. "
         "Use send_message to post into any Telex conversation — give it "
         "conversation_id (from list_conversations/create_channel) or peer_id/email "
         "for a 1:1. It reaches conversations the core send_message tool cannot, "
         "such as a channel just created. Replying to the message you are currently "
         "handling needs no tool call. Mention someone by putting [@](mention:<identity_id>) in the "
         "text (or [@all](mention:all)); the 'mention' field of identity/member "
-        "results is a ready-to-paste token. The mutating actions ("
-        "create_channel, add_members, send_message) can be disabled per account."
+        "results is a ready-to-paste token. update_identity edits the bot's own name and/or description. "
+        "rename_conversation retitles a channel or a non-default chat (the default 1:1 chat "
+        "cannot be renamed). The mutating actions (update_identity, create_channel, "
+        "rename_conversation, add_members, send_message) can be disabled per account."
     ),
     "parameters": {
         "type": "object",
@@ -66,11 +70,13 @@ TELEX_TOOL_SCHEMA: dict[str, Any] = {
             "query": {"type": "string", "description": "search_identities: name/email text"},
             "ids": {"type": "array", "items": {"type": "string"}, "description": "get_identities: identity ids"},
             "emails": {"type": "array", "items": {"type": "string"}, "description": "get_identities/create_channel/add_members: emails"},
+            "display_name": {"type": "string", "description": "update_identity: the bot's new display name (1-100)"},
+            "description": {"type": "string", "description": "update_identity: the bot's new description (up to 200)"},
             "kind": {"type": "integer", "description": "list_conversations: 0 chat, 1 channel"},
             "offset": {"type": "integer"},
             "limit": {"type": "integer", "description": "page size (1-100)"},
             "conversation_id": {"type": "string", "description": "16-char hex id"},
-            "title": {"type": "string", "description": "create_channel: channel title (1-200)"},
+            "title": {"type": "string", "description": "create_channel/rename_conversation: title (1-200)"},
             "identity_ids": {"type": "array", "items": {"type": "string"}, "description": "create_channel/add_members: member identity ids"},
             "before_seq": {"type": "integer"},
             "after_seq": {"type": "integer"},
@@ -124,6 +130,7 @@ def _identity_out(i: dict[str, Any]) -> dict[str, Any]:
         "id": i.get("id"),
         "kind": IDENTITY_KIND_LABELS.get(i.get("kind"), i.get("kind")),
         "display_name": i.get("display_name"),
+        "description": i.get("description"),
         "email": i.get("email"),
         "online": i.get("online"),
         "mention": _mention_token(i.get("id", "")),
@@ -135,6 +142,7 @@ def _conversation_out(c: dict[str, Any]) -> dict[str, Any]:
         "id": c.get("id"),
         "kind": CONVERSATION_KIND_LABELS.get(c.get("kind"), c.get("kind")),
         "title": c.get("title"),
+        "is_default": c.get("is_default"),
         "member_count": c.get("member_count"),
         "last_seq": c.get("last_seq"),
     }
@@ -224,6 +232,14 @@ async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
         if action == "get_identities":
             res = await client.get_identities(args.get("ids") or [], args.get("emails") or [])
             return json.dumps({"identities": [_identity_out(i) for i in res]})
+        if action == "update_identity":
+            display_name = args.get("display_name")
+            description = args.get("description")
+            # An empty description clears it, so absence is the only no-op.
+            if not display_name and description is None:
+                return json.dumps({"error": "provide display_name and/or description"})
+            identity = await client.update_identity(display_name, description)
+            return json.dumps({"identity": _identity_out(identity)})
         if action == "list_conversations":
             res = await client.list_conversations(
                 kind=args.get("kind"), offset=args.get("offset"), limit=args.get("limit") or 20
@@ -259,6 +275,9 @@ async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
             if err:
                 return json.dumps({"error": err})
             conv = await client.create_channel(args["title"], ids)
+            return json.dumps({"conversation": _conversation_out(conv)})
+        if action == "rename_conversation":
+            conv = await client.rename_conversation(args["conversation_id"], args["title"])
             return json.dumps({"conversation": _conversation_out(conv)})
         if action == "list_members":
             members = await client.list_members(args["conversation_id"])

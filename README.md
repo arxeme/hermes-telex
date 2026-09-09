@@ -83,9 +83,11 @@ platforms:
       tools:
         search_identities: true
         get_identities: true
+        update_identity: true
         list_conversations: true
         get_conversation_info: true
         create_channel: true
+        rename_conversation: true
         list_members: true
         add_members: true
         get_conversation_messages: true
@@ -152,9 +154,11 @@ When enabled, a `telex` tool lets the agent inspect Telex, manage channels, and 
 | Action | Purpose |
 | --- | --- |
 | `search_identities` / `get_identities` | find or resolve users and bots |
+| `update_identity` | edit the bot's own display name and/or description |
 | `list_conversations` / `get_conversation_info` | chats and channels |
-| `list_members` / `add_members` | channel membership |
 | `create_channel` | create a channel (a 1:1 needs no creation — `send_message` with `peer_id`/`email` opens the default chat itself) |
+| `rename_conversation` | retitle a channel or a non-default chat |
+| `list_members` / `add_members` | channel membership |
 | `get_conversation_messages` | history, chronological |
 | `send_message` | post into any conversation |
 
