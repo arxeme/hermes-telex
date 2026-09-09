@@ -21,6 +21,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Restore the annotated tag
+        # actions/checkout rewrites the pushed tag as a lightweight tag at the
+        # commit, dropping the message this release is built from.
+        run: git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
