@@ -88,6 +88,17 @@ async def test_channel_policies_and_mention():
     assert adapter.events[0].raw_message["telex_was_mentioned"] is True
 
 
+async def test_channel_command_after_the_bots_own_mention():
+    disp, adapter, _ = _setup({"group_policy": "open"}, channel=True)
+    await disp.handle(_msg(conv="c1", mention_ids=["bot1"], text="[@Bot](mention:bot1) /reset"))
+    assert adapter.events[0].text == "/reset"
+
+    # Nothing but the mention: the strip would leave an empty event, so the text stays as sent.
+    disp, adapter, _ = _setup({"group_policy": "open"}, channel=True)
+    await disp.handle(_msg(conv="c1", mid="z", mention_ids=["bot1"], text="[@Bot](mention:bot1)"))
+    assert adapter.events[0].text == "[@Bot](mention:bot1)"
+
+
 async def test_channel_allowlist():
     disp, adapter, _ = _setup(
         {"group_policy": "allowlist", "group_allow_from": ["cX"], "group_require_mention": False},

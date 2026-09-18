@@ -72,8 +72,19 @@ MEDIA_BLOCK_TYPES = {
 MESSAGE_STATUS_LABELS = {0: "completed", 1: "in_progress", 2: "error", 3: "aborted"}
 CONVERSATION_KIND_LABELS = {0: "chat", 1: "channel"}
 MEMBER_ROLE_LABELS = {0: "member", 1: "admin", 2: "owner"}
+MEMBER_ROLE_BY_NAME = {name: value for value, name in MEMBER_ROLE_LABELS.items()}
 IDENTITY_KIND_LABELS = {0: "user", 1: "mate_instance", 2: "bot"}
 TOOL_STATUS_LABELS = {0: "in_progress", 1: "success", 2: "error", 3: "aborted"}
+
+# TelexConversationFlag bits, keyed by the permission name the tool speaks.
+# Restriction semantics: a set bit limits the action to the channel owner and admins.
+CHANNEL_PERMISSIONS = {
+    "add_members": 1,
+    "remove_members": 2,
+    "rename": 4,
+    "announcement": 8,
+    "mention_all": 16,
+}
 
 
 def message_flag_labels(flags: int) -> list[str]:

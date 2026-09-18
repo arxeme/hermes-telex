@@ -10,6 +10,7 @@ a raised exception here counts as one handle failure toward the poison cap.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 from . import access, blocks
@@ -52,6 +53,20 @@ _MISSED_LIMIT = 50
 
 
 # Hermes exposes attachments only for media-specific message types.
+_LEADING_MENTION = re.compile(r"\s*(?:\[@(?:\\.|[^\\\]])*\])?\(mention:(?P<id>[^)]+)\)\s*")
+
+
+# The gateway only detects a command at the start of the text, and a channel message addressed to the
+# bot opens with its mention token.
+def _strip_leading_self_mention(text: str, self_id: str | None) -> str:
+    if not text or not self_id:
+        return text
+    match = _LEADING_MENTION.match(text)
+    if not match or match.group("id").lower() != self_id.lower():
+        return text
+    return text[match.end() :]
+
+
 def _message_type(media_types: list[str]) -> MessageType:
     if not media_types:
         return MessageType.TEXT
@@ -159,7 +174,8 @@ class TelexDispatcher:
                 return
             # DM_ALLOW / DM_PAIRING both forward; pairing is resolved by the gateway.
 
-        text = blocks.extract_text(message)
+        raw_text = blocks.extract_text(message)
+        text = _strip_leading_self_mention(raw_text, self.client.self_id)
         media_urls: list[str] = []
         media_types: list[str] = []
         placeholders: list[str] = []
@@ -177,10 +193,14 @@ class TelexDispatcher:
                 text = f"{text}\n{note}" if text else note
         if not text and placeholders:
             text = " ".join(placeholders)
+        if not text:
+            text = raw_text
 
-        preamble = await self._context_preamble(conv, seq, conversation, is_channel, was_mentioned)
-        if preamble:
-            text = f"{preamble}\n\n{text}" if text else preamble
+        # Context put ahead of the text would hide a command.
+        if not text.lstrip().startswith("/"):
+            preamble = await self._context_preamble(conv, seq, conversation, is_channel, was_mentioned)
+            if preamble:
+                text = f"{preamble}\n\n{text}" if text else preamble
 
         # Core context omits chat_id, so embed the send target in chat_name.
         title = conversation.get("title") or ""
