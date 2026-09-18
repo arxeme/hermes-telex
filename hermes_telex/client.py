@@ -379,6 +379,22 @@ class TelexClient:
         self._conversation_cache.delete(conversation_id)
         return res.get("conversation") or {}
 
+    async def update_conversation_settings(
+        self, conversation_id: str, flags: int | None = None, announcement: str | None = None
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"conversation_id": conversation_id}
+        if flags is not None:
+            body["flags"] = flags
+        if announcement is not None:
+            body["announcement"] = announcement
+        res = await self._post("/update-conversation-settings", body)
+        self._conversation_cache.delete(conversation_id)
+        return res.get("conversation") or {}
+
+    async def delete_conversation(self, conversation_id: str) -> None:
+        await self._post("/delete-conversation", {"conversation_id": conversation_id})
+        self._conversation_cache.delete(conversation_id)
+
     async def list_members(self, conversation_id: str) -> list[dict[str, Any]]:
         res = await self._get("/list-members", {"conversation_id": conversation_id})
         return res.get("members") or []
@@ -386,6 +402,18 @@ class TelexClient:
     async def add_members(self, conversation_id: str, identity_ids: list[str]) -> list[dict[str, Any]]:
         res = await self._post("/add-members", {"conversation_id": conversation_id, "identity_ids": identity_ids})
         return res.get("members") or []
+
+    async def remove_members(self, conversation_id: str, identity_ids: list[str]) -> None:
+        await self._post("/remove-members", {"conversation_id": conversation_id, "identity_ids": identity_ids})
+        self._conversation_cache.delete(conversation_id)
+
+    async def update_member_role(self, conversation_id: str, identity_id: str, role: int) -> dict[str, Any]:
+        res = await self._post(
+            "/update-member-role",
+            {"conversation_id": conversation_id, "identity_id": identity_id, "role": role},
+        )
+        self._conversation_cache.delete(conversation_id)
+        return res.get("conversation") or {}
 
     async def search_identities(self, query: str, limit: int | None = None) -> list[dict[str, Any]]:
         res = await self._get("/search-identities", {"query": query, "limit": limit})

@@ -88,8 +88,12 @@ platforms:
         get_conversation_info: true
         create_channel: true
         rename_conversation: true
+        update_conversation_settings: true
+        delete_conversation: true
         list_members: true
         add_members: true
+        remove_members: true
+        update_member_role: true
         get_conversation_messages: true
         send_message: true
       accounts:                          # optional multi-bot
@@ -158,7 +162,10 @@ When enabled, a `telex` tool lets the agent inspect Telex, manage channels, and 
 | `list_conversations` / `get_conversation_info` | chats and channels |
 | `create_channel` | create a channel (a 1:1 needs no creation — `send_message` with `peer_id`/`email` opens the default chat itself) |
 | `rename_conversation` | retitle a channel or a non-default chat |
-| `list_members` / `add_members` | channel membership |
+| `update_conversation_settings` | allow or deny channel members an action, and replace the announcement (empty clears) |
+| `delete_conversation` | delete a channel the bot owns |
+| `list_members` / `add_members` / `remove_members` | channel membership |
+| `update_member_role` | channel roles, including handing the channel over with `owner` |
 | `get_conversation_messages` | history, chronological |
 | `send_message` | post into any conversation |
 
