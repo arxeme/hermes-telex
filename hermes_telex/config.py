@@ -23,8 +23,12 @@ TOOL_KEYS = (
     "get_conversation_info",
     "create_channel",
     "rename_conversation",
+    "update_conversation_settings",
+    "delete_conversation",
     "list_members",
     "add_members",
+    "remove_members",
+    "update_member_role",
     "get_conversation_messages",
     "send_message",
 )

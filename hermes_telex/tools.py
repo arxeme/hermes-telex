@@ -18,8 +18,11 @@ from .client import get_telex_client
 from .send import send_telex_message
 from .log import get_logger
 from .types import (
+    CHANNEL_PERMISSIONS,
     CONVERSATION_KIND_LABELS,
+    ConversationKind,
     IDENTITY_KIND_LABELS,
+    MEMBER_ROLE_BY_NAME,
     MEMBER_ROLE_LABELS,
     MESSAGE_STATUS_LABELS,
     message_flag_labels,
@@ -38,8 +41,12 @@ ACTIONS = (
     "get_conversation_info",
     "create_channel",
     "rename_conversation",
+    "update_conversation_settings",
+    "delete_conversation",
     "list_members",
     "add_members",
+    "remove_members",
+    "update_member_role",
     "get_conversation_messages",
     "send_message",
 )
@@ -51,7 +58,9 @@ TELEX_TOOL_SCHEMA: dict[str, Any] = {
         "(identities/conversations/members/messages). "
         "Actions: search_identities, get_identities, update_identity, "
         "list_conversations, get_conversation_info, create_channel, rename_conversation, "
-        "list_members, add_members, get_conversation_messages, send_message. "
+        "update_conversation_settings, delete_conversation (channels only, owner only), "
+        "list_members, add_members, remove_members, update_member_role (owner and admins), "
+        "get_conversation_messages, send_message. "
         "Use send_message to post into any Telex conversation — give it "
         "conversation_id (from list_conversations/create_channel) or peer_id/email "
         "for a 1:1. It reaches conversations the core send_message tool cannot, "
@@ -60,8 +69,12 @@ TELEX_TOOL_SCHEMA: dict[str, Any] = {
         "text (or [@all](mention:all)); the 'mention' field of identity/member "
         "results is a ready-to-paste token. update_identity edits the bot's own name and/or description. "
         "rename_conversation retitles a channel or a non-default chat (the default 1:1 chat "
-        "cannot be renamed). The mutating actions (update_identity, create_channel, "
-        "rename_conversation, add_members, send_message) can be disabled per account."
+        "cannot be renamed). update_conversation_settings takes permission names and the "
+        "announcement: allow enables an action for all members, deny restricts it to the owner "
+        "and admins. Only the owner and admins can change permissions; editing the announcement "
+        "requires the announcement permission. get_conversation_info returns the channel's "
+        "announcement, your my_role and its member_permissions; the owner and admins can perform "
+        "everything member_permissions lists. "
     ),
     "parameters": {
         "type": "object",
@@ -69,7 +82,7 @@ TELEX_TOOL_SCHEMA: dict[str, Any] = {
             "action": {"type": "string", "enum": list(ACTIONS)},
             "query": {"type": "string", "description": "search_identities: name/email text"},
             "ids": {"type": "array", "items": {"type": "string"}, "description": "get_identities: identity ids"},
-            "emails": {"type": "array", "items": {"type": "string"}, "description": "get_identities/create_channel/add_members: emails"},
+            "emails": {"type": "array", "items": {"type": "string"}, "description": "get_identities/create_channel/add_members/remove_members: emails"},
             "display_name": {"type": "string", "description": "update_identity: the bot's new display name (1-100)"},
             "description": {"type": "string", "description": "update_identity: the bot's new description (up to 200)"},
             "kind": {"type": "integer", "description": "list_conversations: 0 chat, 1 channel"},
@@ -77,12 +90,17 @@ TELEX_TOOL_SCHEMA: dict[str, Any] = {
             "limit": {"type": "integer", "description": "page size (1-100)"},
             "conversation_id": {"type": "string", "description": "16-char hex id"},
             "title": {"type": "string", "description": "create_channel/rename_conversation: title (1-200)"},
-            "identity_ids": {"type": "array", "items": {"type": "string"}, "description": "create_channel/add_members: member identity ids"},
+            "identity_ids": {"type": "array", "items": {"type": "string"}, "description": "create_channel/add_members/remove_members: member identity ids"},
+            "allow": {"type": "array", "items": {"type": "string"}, "description": "update_conversation_settings: permissions to open up to members (add_members, remove_members, rename, announcement, mention_all)"},
+            "deny": {"type": "array", "items": {"type": "string"}, "description": "update_conversation_settings: permissions to restrict to the owner and admins"},
+            "announcement": {"type": "string", "description": "update_conversation_settings: announcement text (up to 1000), empty clears"},
+            "identity_id": {"type": "string", "description": "update_member_role: the member to act on"},
+            "role": {"type": "string", "description": "update_member_role: member, admin, or owner to hand the channel over (owner only; you become an admin, and the owner cannot be demoted directly)"},
             "before_seq": {"type": "integer"},
             "after_seq": {"type": "integer"},
             "text": {"type": "string", "description": "send_message: message text (mentions via [@](mention:<id>))"},
             "peer_id": {"type": "string", "description": "send_message: target identity id for a 1:1 chat"},
-            "email": {"type": "string", "description": "send_message: target identity email for a 1:1 chat"},
+            "email": {"type": "string", "description": "send_message: target identity email for a 1:1 chat; update_member_role: the member to act on"},
             "media_paths": {"type": "array", "items": {"type": "string"}, "description": "send_message: local file paths to attach (each <= 20 MiB)"},
         },
         "required": ["action"],
@@ -137,7 +155,18 @@ def _identity_out(i: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _conversation_out(c: dict[str, Any]) -> dict[str, Any]:
+def _permission_mask(names: list[str]) -> int:
+    mask = 0
+    for name in names:
+        mask |= CHANNEL_PERMISSIONS[name]
+    return mask
+
+
+def _member_permissions(flags: int) -> dict[str, bool]:
+    return {name: not flags & bit for name, bit in CHANNEL_PERMISSIONS.items()}
+
+
+def _conversation_brief_out(c: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": c.get("id"),
         "kind": CONVERSATION_KIND_LABELS.get(c.get("kind"), c.get("kind")),
@@ -146,6 +175,18 @@ def _conversation_out(c: dict[str, Any]) -> dict[str, Any]:
         "member_count": c.get("member_count"),
         "last_seq": c.get("last_seq"),
     }
+
+
+def _conversation_out(c: dict[str, Any]) -> dict[str, Any]:
+    out = _conversation_brief_out(c)
+    if c.get("kind") != ConversationKind.CHANNEL:
+        return out
+    out["announcement"] = (c.get("data") or {}).get("announcement", "")
+    out["member_permissions"] = _member_permissions(c.get("flags") or 0)
+    role = (c.get("membership") or {}).get("role")
+    if role is not None:
+        out["my_role"] = MEMBER_ROLE_LABELS.get(role, role)
+    return out
 
 
 def _member_out(m: dict[str, Any], idmap: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -185,6 +226,20 @@ async def _resolve_member_ids(client, identity_ids, emails) -> tuple[list[str], 
             if by_email[email.lower()] not in ids:
                 ids.append(by_email[email.lower()])
     return ids, None
+
+
+async def _resolve_one_identity_id(client, args: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Resolve a single member from identity_id or email. Returns (identity_id, error)."""
+    ids, err = await _resolve_member_ids(
+        client,
+        [args["identity_id"]] if args.get("identity_id") else [],
+        [args["email"]] if args.get("email") else [],
+    )
+    if err:
+        return None, err
+    if len(ids) != 1:
+        return None, "provide exactly one identity_id or email"
+    return ids[0], None
 
 
 async def _resolve_peer_id(client, args: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -245,7 +300,7 @@ async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
                 kind=args.get("kind"), offset=args.get("offset"), limit=args.get("limit") or 20
             )
             return json.dumps({
-                "conversations": [_conversation_out(c) for c in res["conversations"]],
+                "conversations": [_conversation_brief_out(c) for c in res["conversations"]],
                 "total": res["total"],
             })
         if action == "get_conversation_info":
@@ -275,10 +330,30 @@ async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
             if err:
                 return json.dumps({"error": err})
             conv = await client.create_channel(args["title"], ids)
-            return json.dumps({"conversation": _conversation_out(conv)})
+            return json.dumps({"conversation": _conversation_brief_out(conv)})
         if action == "rename_conversation":
             conv = await client.rename_conversation(args["conversation_id"], args["title"])
-            return json.dumps({"conversation": _conversation_out(conv)})
+            return json.dumps({"conversation": _conversation_brief_out(conv)})
+        if action == "update_conversation_settings":
+            allow = args.get("allow") or []
+            deny = args.get("deny") or []
+            announcement = args.get("announcement")
+            if not allow and not deny and announcement is None:
+                return json.dumps({"error": "provide a permission to allow or deny, or an announcement"})
+            unknown = [p for p in [*allow, *deny] if p not in CHANNEL_PERMISSIONS]
+            if unknown:
+                return json.dumps({"error": f"unknown permissions: {', '.join(unknown)}"})
+            flags = None
+            if allow or deny:
+                current = await client.get_conversation(args["conversation_id"], force_refresh=True)
+                flags = ((current.get("flags") or 0) | _permission_mask(deny)) & ~_permission_mask(allow)
+            conv = await client.update_conversation_settings(
+                args["conversation_id"], flags=flags, announcement=announcement
+            )
+            return json.dumps({"conversation": _conversation_brief_out(conv)})
+        if action == "delete_conversation":
+            await client.delete_conversation(args["conversation_id"])
+            return json.dumps({"deleted": args["conversation_id"]})
         if action == "list_members":
             members = await client.list_members(args["conversation_id"])
             idmap = await client.resolve_identities([m.get("identity_id") for m in members if m.get("identity_id")])
@@ -292,6 +367,23 @@ async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
             members = await client.add_members(args["conversation_id"], ids)
             idmap = await client.resolve_identities([m.get("identity_id") for m in members if m.get("identity_id")])
             return json.dumps({"members": [_member_out(m, idmap) for m in members]})
+        if action == "remove_members":
+            ids, err = await _resolve_member_ids(client, args.get("identity_ids"), args.get("emails"))
+            if err:
+                return json.dumps({"error": err})
+            if not ids:
+                return json.dumps({"error": "provide at least one identity_id or email"})
+            await client.remove_members(args["conversation_id"], ids)
+            return json.dumps({"requested": ids})
+        if action == "update_member_role":
+            role = MEMBER_ROLE_BY_NAME.get((args.get("role") or "").strip().lower())
+            if role is None:
+                return json.dumps({"error": "role must be member, admin or owner"})
+            identity_id, err = await _resolve_one_identity_id(client, args)
+            if err:
+                return json.dumps({"error": err})
+            conv = await client.update_member_role(args["conversation_id"], identity_id, role)
+            return json.dumps({"conversation": _conversation_brief_out(conv)})
         if action == "get_conversation_messages":
             msgs = await client.list_messages(
                 args["conversation_id"], before_seq=args.get("before_seq"),
