@@ -49,15 +49,15 @@ E2E 直接连一个**部署在远端的真实 Voyager 实例**（Telex 内含其
 
 ```bash
 scripts/local-test.sh up            # 起 tunnel + web，等就绪，打印 URL 与 env
-scripts/local-test.sh register-bot --token <voyager_session JWT>   # 在该实例上注册 bot，取一次性 key
+scripts/local-test.sh create-bot --token <voyager_session JWT>    # 在该实例上建自定义 bot，取一次性 key
 scripts/local-test.sh env           # 打印 hermes-telex 的 env 块
 scripts/local-test.sh down          # 停 web + tunnel
 scripts/local-test.sh status|logs   # 巡检 / 看日志
 ```
 
-联调时 hermes-telex 配置：`TELEX_BASE_URL=http://127.0.0.1:8000`、`TELEX_API_KEY`/`TELEX_BOT_IDENTITY_ID`
-取自 `register-bot`、`TELEX_ALLOWED_USERS` 填自己的真实账号 email。前置：本机具备 `chisel`/`pnpm`/`make`，
-且 Voyager 仓库 `web` 依赖已装（`make -C <voyager> init`）。`register-bot` 的 session JWT 从
+联调时 hermes-telex 配置：`TELEX_BASE_URL=http://127.0.0.1:8000`、`TELEX_API_KEY`/`TELEX_BOT_ID`
+取自 `create-bot`、`TELEX_ALLOW_FROM` 填自己的真实账号 email。前置：本机具备 `chisel`/`pnpm`/`make`，
+且 Voyager 仓库 `web` 依赖已装（`make -C <voyager> init`）。`create-bot` 的 session JWT 从
 `http://localhost:3000` 登录后浏览器 `localStorage.voyager_session` 获取。
 
 建议测试目录：
@@ -272,12 +272,12 @@ tests/
 
 覆盖 WBS：W-12，结果落 `docs/test/tr_hermes-telex-plugin_*_zh.md`。
 环境按 §2.1 用 `scripts/local-test.sh up` 起（tunnel 到远端 Voyager 实例）；hermes gateway 配
-`TELEX_BASE_URL=http://127.0.0.1:8000`。收尾务必 `scripts/local-test.sh down`，并按需 `unregister-bot` 清理测试 bot。
+`TELEX_BASE_URL=http://127.0.0.1:8000`。收尾务必 `scripts/local-test.sh down`，并按需在 Settings -> Telex Bots 里删除测试 bot（或 `POST /voyager/v1/telex/delete-bot`，删除即退役）。
 
 | 场景 | 验收 |
 | --- | --- |
 | E-00 起环境 | `scripts/local-test.sh up` 后 `:8000`/`:3000` 就绪；`http://localhost:3000` 可用真实账号登录 |
-| E-01 取 key | `scripts/local-test.sh register-bot` 颁发 bot key；hermes gateway 配置后 `hermes gateway status` 显示 Telex connected |
+| E-01 取 key | `scripts/local-test.sh create-bot` 颁发 bot key；hermes gateway 配置后 `hermes gateway status` 显示 Telex connected |
 | E-02 1:1 收发 | 真人向 bot 私聊，agent 回复到达；自发消息不回流 |
 | E-03 channel @bot | channel 中 @bot 触发，未 @ 不触发；channel 准入生效 |
 | E-04 媒体 | 入站图片/文件被 agent 接收；出站图片/文件正确显示 |

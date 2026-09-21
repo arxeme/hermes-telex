@@ -173,6 +173,36 @@ async def test_conversation_info_omits_the_role_without_a_membership(wired):
     assert "my_role" not in out["conversation"]
 
 
+@pytest.mark.parametrize(
+    ("path", "args"),
+    [
+        ("/create-channel", {"action": "create_channel", "title": "Sprint"}),
+        (
+            "/update-conversation-settings",
+            {"action": "update_conversation_settings", "conversation_id": "c1", "deny": ["rename"]},
+        ),
+        (
+            "/update-member-role",
+            {"action": "update_member_role", "conversation_id": "c1", "identity_id": "u2", "role": "admin"},
+        ),
+    ],
+)
+async def test_channel_writes_return_the_full_conversation(wired, path, args):
+    client, _ = wired
+    client.post_replies[path] = {
+        "conversation": {
+            "id": "c1", "kind": 1, "title": "Sprint", "flags": 6,
+            "data": {"announcement": "ship friday"},
+            "membership": {"identity_id": "bot", "role": 2},
+        }
+    }
+    out = await _call(**args)
+    assert out["conversation"]["member_permissions"]["rename"] is False
+    assert out["conversation"]["my_role"] == "owner"
+    assert out["conversation"]["announcement"] == "ship friday"
+    assert "flags" not in out["conversation"]
+
+
 async def test_conversation_info_leaves_a_chat_without_channel_fields(wired):
     client, _ = wired
     client.conversations["c2"] = {"id": "c2", "kind": 0, "title": "Alice", "flags": 0}

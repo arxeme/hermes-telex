@@ -27,8 +27,8 @@ TOOL_KEYS = (
     "delete_conversation",
     "list_members",
     "add_members",
-    "remove_members",
     "update_member_role",
+    "remove_members",
     "get_conversation_messages",
     "send_message",
 )

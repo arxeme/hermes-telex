@@ -52,8 +52,8 @@ that deployment.
 
 ## Get a bot API key
 
-1. In Voyager Telex, register a bot (owner account): `POST /voyager/v1/telex/register-bot`
-   (web SDK `telexService.registerBot`). See [docs/spec TD §2](docs/spec/td_hermes-telex-plugin_zh.md).
+1. In Voyager, sign in as the owner account and add a bot under Settings -> Telex Bots -> **Custom Bots**
+   (`POST /voyager/v1/telex/create-bot`, web SDK `telexService.createBot`; see [docs/spec TD §2](docs/spec/td_hermes-telex-plugin_zh.md)).
 2. Copy the one-time **plaintext API key** (shown only once) and the returned `bot.id`.
 3. The base URL is your Voyager host (default `https://voyager.ingarena.net`).
 
@@ -92,8 +92,8 @@ platforms:
         delete_conversation: true
         list_members: true
         add_members: true
-        remove_members: true
         update_member_role: true
+        remove_members: true
         get_conversation_messages: true
         send_message: true
       accounts:                          # optional multi-bot
@@ -164,8 +164,9 @@ When enabled, a `telex` tool lets the agent inspect Telex, manage channels, and 
 | `rename_conversation` | retitle a channel or a non-default chat |
 | `update_conversation_settings` | allow or deny channel members an action, and replace the announcement (empty clears) |
 | `delete_conversation` | delete a channel the bot owns |
-| `list_members` / `add_members` / `remove_members` | channel membership |
+| `list_members` / `add_members` | channel membership |
 | `update_member_role` | channel roles, including handing the channel over with `owner` |
+| `remove_members` | take members out of a channel |
 | `get_conversation_messages` | history, chronological |
 | `send_message` | post into any conversation |
 
@@ -220,7 +221,7 @@ a remote Voyager instance and running the local web frontend:
 
 ```bash
 scripts/local-test.sh up            # tunnel (127.0.0.1:8000) + web (:3000)
-scripts/local-test.sh register-bot --token <voyager_session JWT>
+scripts/local-test.sh create-bot --token <voyager_session JWT>
 scripts/local-test.sh env           # print hermes-telex env for this environment
 scripts/local-test.sh down
 ```

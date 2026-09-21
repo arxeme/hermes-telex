@@ -59,10 +59,10 @@ scripts/local-test.sh status
 
 1. 浏览器开 `http://localhost:3000`，用**真实账号**登录。
 2. 取 session JWT：DevTools → Application → Local Storage → `voyager_session`。
-3. 颁发 bot（保存 `plaintext_key` 与 `bot.id`，key 仅此一次）：
+3. 建自定义 bot（保存 `plaintext_key` 与 `bot.id`，key 仅此一次）：
 
 ```bash
-scripts/local-test.sh register-bot --token '<voyager_session JWT>' --name hermes-telex-e2e
+scripts/local-test.sh create-bot --token '<voyager_session JWT>' --name hermes-telex-e2e
 ```
 
 ## 3. 运行时配置（在 VM 的 config.yaml，非本仓库）
@@ -126,7 +126,7 @@ deploy/deploy-telex-plugin.sh
 ```bash
 deploy/cleanup-telex-plugin.sh     # 远端：禁用+移除插件，重启 gateway
 scripts/local-test.sh down         # 本机：停 tunnel + web
-# 可选：unregister-bot 清理测试 bot
+# 可选：Settings -> Telex Bots 里删除测试 bot（POST /voyager/v1/telex/delete-bot），删除即退役
 ```
 
 ## 故障排查

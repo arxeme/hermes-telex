@@ -52,7 +52,6 @@ except Exception:  # pragma: no cover
 _MISSED_LIMIT = 50
 
 
-# Hermes exposes attachments only for media-specific message types.
 _LEADING_MENTION = re.compile(r"\s*(?:\[@(?:\\.|[^\\\]])*\])?\(mention:(?P<id>[^)]+)\)\s*")
 
 
@@ -67,6 +66,7 @@ def _strip_leading_self_mention(text: str, self_id: str | None) -> str:
     return text[match.end() :]
 
 
+# Hermes exposes attachments only for media-specific message types.
 def _message_type(media_types: list[str]) -> MessageType:
     if not media_types:
         return MessageType.TEXT

@@ -18,14 +18,14 @@
 #   scripts/local-test.sh status        # show process + port state
 #   scripts/local-test.sh logs [tunnel|web]
 #   scripts/local-test.sh env           # print the hermes-telex env block for this env
-#   scripts/local-test.sh register-bot  # register a Telex bot on the tunneled server (needs a session token)
+#   scripts/local-test.sh create-bot    # create a custom Telex bot on the tunneled server (needs a session token)
 #
 # Config (env vars):
 #   VOYAGER_DIR       Path to the Voyager repo (default: auto-detected sibling checkout)
 #   API_PORT          Local Voyager API port (default: 8000)
 #   WEB_PORT          Local web dev port (default: 3000)
 #   WAIT_TIMEOUT      Seconds to wait for each service (default: 120)
-#   VOYAGER_SESSION   Session JWT for `register-bot` (or pass --token <jwt>)
+#   VOYAGER_SESSION   Session JWT for `create-bot` (or pass --token <jwt>)
 #
 set -euo pipefail
 
@@ -174,11 +174,11 @@ cmd_logs() {
 cmd_env() {
   cat <<EOF
 # hermes-telex env quickstart for the local (tunneled) Telex test server.
-# Register a bot first ($0 register-bot) and paste its key + id below.
+# Create a custom bot first ($0 create-bot) and paste its key + id below.
 # (Full config incl. multi-account lives in ~/.hermes/config.yaml under platforms.telex.extra — see TD 5.)
-TELEX_API_KEY=<plaintext_key from register-bot>
+TELEX_API_KEY=<plaintext_key from create-bot>
 TELEX_BASE_URL=$API_BASE
-TELEX_BOT_ID=<bot.id from register-bot>
+TELEX_BOT_ID=<bot.id from create-bot>
 TELEX_DM_POLICY=allowlist                 # open | allowlist | pairing
 TELEX_ALLOW_FROM=<your-account-email>      # comma-separated ids/emails; "*" for all (open)
 TELEX_GROUP_POLICY=disabled                # disabled | allowlist | open
@@ -186,27 +186,27 @@ TELEX_GROUP_REQUIRE_MENTION=true
 EOF
 }
 
-cmd_register_bot() {
+cmd_create_bot() {
   local token="${VOYAGER_SESSION:-}" name="hermes-test-bot" desc="hermes-telex local test" vis=1
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --token) token="$2"; shift 2;;
       --name)  name="$2";  shift 2;;
       --visibility) vis="$2"; shift 2;;
-      *) die "register-bot: unknown arg '$1'";;
+      *) die "create-bot: unknown arg '$1'";;
     esac
   done
-  [[ -n "$token" ]] || die "register-bot needs a session JWT: pass --token <jwt> or set VOYAGER_SESSION.
+  [[ -n "$token" ]] || die "create-bot needs a session JWT: pass --token <jwt> or set VOYAGER_SESSION.
   Get it from the browser after logging into $WEB_BASE: DevTools > Application > Local Storage > 'voyager_session'."
   command -v curl >/dev/null || die "curl not found"
   port_open 127.0.0.1 "$API_PORT" || die "API $API_BASE not reachable — run '$0 up' first."
-  log "registering bot '$name' (visibility=$vis) on $API_BASE ..."
-  curl -fsS -X POST "$API_BASE/voyager/v1/telex/register-bot" \
+  log "creating custom bot '$name' (visibility=$vis) on $API_BASE ..."
+  curl -fsS -X POST "$API_BASE/voyager/v1/telex/create-bot" \
     -H "Authorization: Bearer $token" \
     -H "Content-Type: application/json" \
     -d "{\"display_name\":\"$name\",\"description\":\"$desc\",\"visibility\":$vis}"
   echo
-  warn "Save 'plaintext_key' now — it is shown only once. Put it in TELEX_API_KEY and bot.id in TELEX_BOT_IDENTITY_ID."
+  warn "Save 'plaintext_key' now — it is shown only once. Put it in TELEX_API_KEY and bot.id in TELEX_BOT_ID."
 }
 
 usage() {
@@ -219,7 +219,7 @@ case "${1:-up}" in
   status)        cmd_status ;;
   logs)          shift; cmd_logs "${1:-}" ;;
   env)           cmd_env ;;
-  register-bot)  shift; cmd_register_bot "$@" ;;
+  create-bot)    shift; cmd_create_bot "$@" ;;
   -h|--help|help) usage ;;
-  *) die "unknown command '$1' (try: up | down | status | logs | env | register-bot | help)";;
+  *) die "unknown command '$1' (try: up | down | status | logs | env | create-bot | help)";;
 esac
