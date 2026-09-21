@@ -90,12 +90,12 @@ Telex 特性沿用 §0 协议基准：单一 subscribe 入站、单一 X-API-Key
 
 | 操作 | RPC | HTTP |
 |---|---|---|
-| 注册 bot（同时颁发首个 key） | `TelexRegisterBot` | `POST /voyager/v1/telex/register-bot` |
+| 建 bot（同时颁发首个 key） | `TelexCreateBot` | `POST /voyager/v1/telex/create-bot` |
 | 轮换 key | `TelexRotateBotKey` | `POST /voyager/v1/telex/rotate-bot-key` |
 | 列出 bot | `TelexListBots` | `POST /voyager/v1/telex/list-bots` |
-| 注销 bot | `TelexUnregisterBot` | `POST /voyager/v1/telex/unregister-bot` |
+| 删除 bot | `TelexDeleteBot` | `POST /voyager/v1/telex/delete-bot` |
 
-运维：以 bot 归属 user 身份调 `register-bot`（web SDK `telexService.registerBot` / 带 session 的 HTTP）→ 保存一次性 `plaintext_key`（→ `api_key`）与 `bot.id`（→ `bot_id`，硬化自发消息抑制）。丢失只能轮换。
+运维：以 bot 归属 user 身份调 `create-bot`（web SDK `telexService.createBot` / 带 session 的 HTTP）→ 保存一次性 `plaintext_key`（→ `api_key`）与 `bot.id`（→ `bot_id`，硬化自发消息抑制）。丢失只能轮换。
 
 ---
 

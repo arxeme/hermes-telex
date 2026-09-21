@@ -403,10 +403,6 @@ class TelexClient:
         res = await self._post("/add-members", {"conversation_id": conversation_id, "identity_ids": identity_ids})
         return res.get("members") or []
 
-    async def remove_members(self, conversation_id: str, identity_ids: list[str]) -> None:
-        await self._post("/remove-members", {"conversation_id": conversation_id, "identity_ids": identity_ids})
-        self._conversation_cache.delete(conversation_id)
-
     async def update_member_role(self, conversation_id: str, identity_id: str, role: int) -> dict[str, Any]:
         res = await self._post(
             "/update-member-role",
@@ -414,6 +410,10 @@ class TelexClient:
         )
         self._conversation_cache.delete(conversation_id)
         return res.get("conversation") or {}
+
+    async def remove_members(self, conversation_id: str, identity_ids: list[str]) -> None:
+        await self._post("/remove-members", {"conversation_id": conversation_id, "identity_ids": identity_ids})
+        self._conversation_cache.delete(conversation_id)
 
     async def search_identities(self, query: str, limit: int | None = None) -> list[dict[str, Any]]:
         res = await self._get("/search-identities", {"query": query, "limit": limit})

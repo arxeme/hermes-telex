@@ -59,6 +59,7 @@ class StubClient(TelexClient):
         self.uploaded: list[tuple[str, str]] = []
         self.downloads: dict[str, tuple[bytes, str]] = {}
         self.posts: list[tuple[str, dict]] = []
+        self.post_replies: dict[str, dict] = {}
         self.created_chats: list[dict] = []
 
     async def _post(self, path: str, body: dict):
@@ -67,7 +68,7 @@ class StubClient(TelexClient):
         self.posts.append((path, body))
         if path.endswith("/mark-read"):
             return {"read_seq": body.get("read_seq")}
-        return {}
+        return self.post_replies.get(path, {})
 
     async def get_conversation(self, conversation_id: str, force_refresh: bool = False) -> dict:
         return self.conversations.get(conversation_id, {"id": conversation_id, "kind": 0})

@@ -45,8 +45,8 @@ ACTIONS = (
     "delete_conversation",
     "list_members",
     "add_members",
-    "remove_members",
     "update_member_role",
+    "remove_members",
     "get_conversation_messages",
     "send_message",
 )
@@ -58,8 +58,8 @@ TELEX_TOOL_SCHEMA: dict[str, Any] = {
         "(identities/conversations/members/messages). "
         "Actions: search_identities, get_identities, update_identity, "
         "list_conversations, get_conversation_info, create_channel, rename_conversation, "
-        "update_conversation_settings, delete_conversation (channels only, owner only), "
-        "list_members, add_members, remove_members, update_member_role (owner and admins), "
+        "update_conversation_settings, delete_conversation (channels only), "
+        "list_members, add_members, update_member_role, remove_members, "
         "get_conversation_messages, send_message. "
         "Use send_message to post into any Telex conversation — give it "
         "conversation_id (from list_conversations/create_channel) or peer_id/email "
@@ -69,12 +69,11 @@ TELEX_TOOL_SCHEMA: dict[str, Any] = {
         "text (or [@all](mention:all)); the 'mention' field of identity/member "
         "results is a ready-to-paste token. update_identity edits the bot's own name and/or description. "
         "rename_conversation retitles a channel or a non-default chat (the default 1:1 chat "
-        "cannot be renamed). update_conversation_settings takes permission names and the "
-        "announcement: allow enables an action for all members, deny restricts it to the owner "
-        "and admins. Only the owner and admins can change permissions; editing the announcement "
-        "requires the announcement permission. get_conversation_info returns the channel's "
-        "announcement, your my_role and its member_permissions; the owner and admins can perform "
-        "everything member_permissions lists. "
+        "cannot be renamed). list_conversations and rename_conversation return an abridged "
+        "conversation; every other conversation result is full. update_conversation_settings "
+        "takes permission names and the announcement: allow enables an action for all members, "
+        "deny restricts it to the owner and admins; the owner and admins are never restricted "
+        "by any of them. "
     ),
     "parameters": {
         "type": "object",
@@ -95,7 +94,7 @@ TELEX_TOOL_SCHEMA: dict[str, Any] = {
             "deny": {"type": "array", "items": {"type": "string"}, "description": "update_conversation_settings: permissions to restrict to the owner and admins"},
             "announcement": {"type": "string", "description": "update_conversation_settings: announcement text (up to 1000), empty clears"},
             "identity_id": {"type": "string", "description": "update_member_role: the member to act on"},
-            "role": {"type": "string", "description": "update_member_role: member, admin, or owner to hand the channel over (owner only; you become an admin, and the owner cannot be demoted directly)"},
+            "role": {"type": "string", "description": "update_member_role: member, admin, or owner to hand the channel over (you become an admin)"},
             "before_seq": {"type": "integer"},
             "after_seq": {"type": "integer"},
             "text": {"type": "string", "description": "send_message: message text (mentions via [@](mention:<id>))"},
@@ -306,31 +305,12 @@ async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
         if action == "get_conversation_info":
             conv = await client.get_conversation(args["conversation_id"], force_refresh=True)
             return json.dumps({"conversation": _conversation_out(conv)})
-        if action == "send_message":
-            conversation_id = (args.get("conversation_id") or "").strip()
-            peer_id, err = await _resolve_peer_id(client, args)
-            if err:
-                return json.dumps({"error": err})
-            if bool(conversation_id) == bool(peer_id):
-                return json.dumps({
-                    "error": "provide exactly one target: conversation_id, or peer_id/email"
-                })
-            text = args.get("text") or ""
-            paths = args.get("media_paths") or []
-            if not text and not paths:
-                return json.dumps({"error": "provide text and/or media_paths"})
-            units = [(p, media_mod.kind_for_path(p)) for p in paths]
-            message = await send_telex_message(
-                client, conversation_id=conversation_id or None, peer_id=peer_id,
-                text=text or None, media_units=units or None,
-            )
-            return json.dumps({"message": _sent_out(message)})
         if action == "create_channel":
             ids, err = await _resolve_member_ids(client, args.get("identity_ids"), args.get("emails"))
             if err:
                 return json.dumps({"error": err})
             conv = await client.create_channel(args["title"], ids)
-            return json.dumps({"conversation": _conversation_brief_out(conv)})
+            return json.dumps({"conversation": _conversation_out(conv)})
         if action == "rename_conversation":
             conv = await client.rename_conversation(args["conversation_id"], args["title"])
             return json.dumps({"conversation": _conversation_brief_out(conv)})
@@ -350,7 +330,7 @@ async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
             conv = await client.update_conversation_settings(
                 args["conversation_id"], flags=flags, announcement=announcement
             )
-            return json.dumps({"conversation": _conversation_brief_out(conv)})
+            return json.dumps({"conversation": _conversation_out(conv)})
         if action == "delete_conversation":
             await client.delete_conversation(args["conversation_id"])
             return json.dumps({"deleted": args["conversation_id"]})
@@ -367,14 +347,6 @@ async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
             members = await client.add_members(args["conversation_id"], ids)
             idmap = await client.resolve_identities([m.get("identity_id") for m in members if m.get("identity_id")])
             return json.dumps({"members": [_member_out(m, idmap) for m in members]})
-        if action == "remove_members":
-            ids, err = await _resolve_member_ids(client, args.get("identity_ids"), args.get("emails"))
-            if err:
-                return json.dumps({"error": err})
-            if not ids:
-                return json.dumps({"error": "provide at least one identity_id or email"})
-            await client.remove_members(args["conversation_id"], ids)
-            return json.dumps({"requested": ids})
         if action == "update_member_role":
             role = MEMBER_ROLE_BY_NAME.get((args.get("role") or "").strip().lower())
             if role is None:
@@ -383,7 +355,15 @@ async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
             if err:
                 return json.dumps({"error": err})
             conv = await client.update_member_role(args["conversation_id"], identity_id, role)
-            return json.dumps({"conversation": _conversation_brief_out(conv)})
+            return json.dumps({"conversation": _conversation_out(conv)})
+        if action == "remove_members":
+            ids, err = await _resolve_member_ids(client, args.get("identity_ids"), args.get("emails"))
+            if err:
+                return json.dumps({"error": err})
+            if not ids:
+                return json.dumps({"error": "provide at least one identity_id or email"})
+            await client.remove_members(args["conversation_id"], ids)
+            return json.dumps({"requested": ids})
         if action == "get_conversation_messages":
             msgs = await client.list_messages(
                 args["conversation_id"], before_seq=args.get("before_seq"),
@@ -391,6 +371,25 @@ async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
             )
             msgs = sorted(msgs, key=lambda m: m.get("seq", 0))
             return json.dumps({"messages": [_message_out(m) for m in msgs]})
+        if action == "send_message":
+            conversation_id = (args.get("conversation_id") or "").strip()
+            peer_id, err = await _resolve_peer_id(client, args)
+            if err:
+                return json.dumps({"error": err})
+            if bool(conversation_id) == bool(peer_id):
+                return json.dumps({
+                    "error": "provide exactly one target: conversation_id, or peer_id/email"
+                })
+            text = args.get("text") or ""
+            paths = args.get("media_paths") or []
+            if not text and not paths:
+                return json.dumps({"error": "provide text and/or media_paths"})
+            units = [(p, media_mod.kind_for_path(p)) for p in paths]
+            message = await send_telex_message(
+                client, conversation_id=conversation_id or None, peer_id=peer_id,
+                text=text or None, media_units=units or None,
+            )
+            return json.dumps({"message": _sent_out(message)})
     except KeyError as exc:
         return json.dumps({"error": f"missing required arg: {exc}"})
     except Exception as exc:  # noqa: BLE001

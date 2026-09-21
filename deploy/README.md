@@ -31,7 +31,7 @@ on the Voyager test server, via SMC + `incus`. Same pattern as hermes-seatalk.
   **WHERE** to deploy — SMC profile, test server, Incus VM, user. `deploy-*.sh`
   sources it. This is the only local file you fill in.
 
-Bot key comes from `scripts/local-test.sh register-bot` (see the runbook).
+Bot key comes from `scripts/local-test.sh create-bot` (see the runbook).
 
 ### One-time setup
 
