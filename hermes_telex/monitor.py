@@ -4,9 +4,9 @@ The subscribe stream is forward-only and lossy. The driver pairs it with the
 server-persisted read cursor: frames dispatch directly and settle by seq, a
 watermark of contiguously settled seqs is marked back (debounced), dual-bound
 list-messages windows repair gaps, and an hourly full-listing sweep is the
-final backstop. A stale timer (no frame for STALE_TIMEOUT) treats the
-connection as half-open and reconnects; the first frame after connect is the
-server's readiness signal, which triggers reconciliation.
+final backstop. A stale timer (no bytes for STALE_TIMEOUT, ping comments
+included) treats the connection as half-open and reconnects; the first frame
+after connect is the server's readiness signal, which triggers reconciliation.
 """
 
 from __future__ import annotations
@@ -23,7 +23,8 @@ logger = get_logger("subscribe")
 
 INITIAL_BACKOFF_S = 1.0
 MAX_BACKOFF_S = 30.0
-STALE_TIMEOUT_S = 60.0
+# Three of the server's 15-second ping comments.
+STALE_TIMEOUT_S = 45.0
 PAGE = 100
 POISON_MAX_ATTEMPTS = 3
 SWEEP_INTERVAL_S = 3600.0
@@ -352,11 +353,10 @@ async def run_monitor(
                         "[%s] get-identity failed; identity will be armed from membership rows: %s",
                         account_id, exc,
                     )
-            frame_event = asyncio.Event()
+            activity = asyncio.Event()
             ready = {"seeded": False}
 
             async def on_event(result: dict[str, Any]) -> None:
-                frame_event.set()  # any frame (incl. heartbeat) resets the stale timer
                 # The first frame is the server's readiness signal: the
                 # subscription is live, so reconciling now cannot miss messages.
                 if not ready["seeded"]:
@@ -370,9 +370,11 @@ async def run_monitor(
                 # Only enqueue: the frame loop must never block on a slow turn.
                 driver.submit_frame(message)
 
-            sub_task = asyncio.create_task(client.subscribe(on_event, stop_event=stop_event))
+            sub_task = asyncio.create_task(
+                client.subscribe(on_event, on_activity=activity.set, stop_event=stop_event)
+            )
             try:
-                await _watch_stale(sub_task, frame_event, stop_event)
+                await _watch_stale(sub_task, activity, stop_event)
                 if stop_event.is_set():
                     # subscribe() only notices the stop flag on the next chunk;
                     # a half-open stream would wedge shutdown. The finally
@@ -406,34 +408,34 @@ async def run_monitor(
         driver.close()
 
 
-async def _watch_stale(sub_task: asyncio.Task, frame_event: asyncio.Event, stop_event: asyncio.Event) -> None:
-    """Wait for the subscribe task, cancelling it if no frame arrives in STALE_TIMEOUT.
+async def _watch_stale(sub_task: asyncio.Task, activity: asyncio.Event, stop_event: asyncio.Event) -> None:
+    """Wait for the subscribe task, cancelling it if no bytes arrive in STALE_TIMEOUT.
 
-    Waits on the subscribe task itself alongside the frame/stop signals, so a
+    Waits on the subscribe task itself alongside the activity/stop signals, so a
     stream failure surfaces immediately (with its real error) instead of being
-    misreported as staleness after a silent minute. Staleness is signalled with
+    misreported as staleness once STALE_TIMEOUT passes. Staleness is signalled with
     _StaleStream, never CancelledError: a genuine external cancellation of
     run_monitor must propagate, not be misread as a reconnect request.
     """
     while True:
         if sub_task.done():
             return
-        frame_waiter = asyncio.create_task(frame_event.wait())
+        activity_waiter = asyncio.create_task(activity.wait())
         stop_waiter = asyncio.create_task(stop_event.wait())
         try:
             done, _pending = await asyncio.wait(
-                {sub_task, frame_waiter, stop_waiter},
+                {sub_task, activity_waiter, stop_waiter},
                 timeout=STALE_TIMEOUT_S,
                 return_when=asyncio.FIRST_COMPLETED,
             )
         finally:
-            frame_waiter.cancel()
+            activity_waiter.cancel()
             stop_waiter.cancel()
         if sub_task in done or stop_waiter in done:
             return
-        if frame_waiter in done:
-            frame_event.clear()
+        if activity_waiter in done:
+            activity.clear()
             continue
-        # Timeout: no frame, no completion, no stop - the connection is half-open.
+        # Timeout: no bytes, no completion, no stop - the connection is half-open.
         sub_task.cancel()
         raise _StaleStream()

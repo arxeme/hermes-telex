@@ -20,7 +20,7 @@ hermes-agent 上以外部 platform plugin 方式提供 Voyager Telex 平台接�
   （`cron_deliver_env_var` / `env_enablement_fn` / `standalone_sender_fn` / `platform_hint`）。
   IRC 参考插件为零-patch 范本。
 - **功能对标 openclaw-telex**（`openclaw/openclaw-telex`）：需实现其全部功能（TD §12 对标清单）。
-- 入站唯一通道为 Telex `subscribe` NDJSON 长连接；无 webhook / relay / websocket 分支。
+- 入站唯一通道为 Telex `subscribe` SSE 长连接；无 webhook / relay / websocket 分支。
 - 鉴权单一 `X-API-Key`（绑定一个 Telex BOT identity）。
 - **访问策略在插件内实现**（`enforces_own_access_policy=True`）：dm_policy(open/allowlist/pairing) +
   group_policy(disabled/allowlist/open) + sender allowlist + require_mention；**pairing 委托 hermes-agent 网关内建配对**。
@@ -37,7 +37,7 @@ hermes-agent 上以外部 platform plugin 方式提供 Voyager Telex 平台接�
 | W-01 | Plugin 注册、平台状态、YAML 配置 | W-00 | AFK | `register(ctx)`、`ctx.register_platform`、callback、hooks（`apply_yaml_config_fn` 翻译 `channels.telex`→`platforms.telex.extra`、`env_enablement_fn`）、`enforces_own_access_policy` 声明 | 注册 `telex`；YAML/env 解析与默认/校验（open 需 `*`）符合 TD §5；register 幂等 |
 | W-02 | Telex OpenAPI 客户端 | W-00 | AFK | X-API-Key client、identities/conversations(缓存)/messages/files、错误映射、backfill watermark、自发抑制、dedup | 可 mock；不泄漏 API Key |
 | W-03 | Block 模型与媒体 | W-02 | AFK | block 构造/解析、upload-file、download-file、cache、占位符 | TEXT 拼接；IMAGE/FILE 经 file_id；≤20MiB；失败降级 |
-| W-04 | Subscribe 入站流 / monitor | W-02, W-03 | AFK | NDJSON、心跳 stale 60s、退避 1s→30s、readiness、`after_seq` 回填(100/页,≤50 页)、401/403 致命 | 半开可恢复；回填不丢不重 |
+| W-04 | Subscribe 入站流 / monitor | W-02, W-03 | AFK | SSE、stale 45s（任何字节 reset）、退避 1s→30s、readiness、`after_seq` 回填(100/页,≤50 页)、鉴权失败致命 | 半开可恢复；回填不丢不重 |
 | W-05 | 入站标准化与调度 | W-04, W-13 | AFK | watermark、dedup、自发抑制、skip IN_PROGRESS/EVENT/FORK_PREFIX、内容抽取、identity 解析、build_source、per-conversation 串行、系统事件同步 | message→MessageEvent；自发不回流；串行正确 |
 | W-06 | 出站适配器 | W-01, W-02, W-03 | AFK | `send`(一次性 COMPLETED)/`send_typing`(activity 3s 保活)/媒体、`_resolve_target`、文本分片(200k)、文本+媒体多 block | 三类 target；分片；email 失败可读错误 |
 | W-07 | cron 与 out-of-process 投递 | W-01, W-06 | AFK | `cron_deliver_env_var`、`standalone_sender_fn`、home channel | `deliver="telex"` 路由 home；离线不依赖 live adapter |
@@ -134,10 +134,10 @@ IMAGE/VIDEO/AUDIO/FILE 经 `download-file` 下载并用 base 的 `cache_*_from_b
 
 ### W-04 Subscribe 入站流
 
-目标：实现唯一入站通道——subscribe NDJSON 长连接。
+目标：实现唯一入站通道——subscribe SSE 长连接。
 
-交付物：`stream.py` —— 逐行 `json.loads`；`result.message=null` 心跳；`result.message` 真实消息→dispatcher；
-`error` 帧→重连；60s stale 计时器（任意帧 reset）；指数退避+jitter 重连；重连后对受影响会话 `after_seq` 回填。
+交付物：`stream.py` —— 每个 SSE 事件的 `data` 做 `json.loads`；`result.message=null` 是就绪事件；`result.message` 真实消息→dispatcher；
+`error` 事件→重连；45s stale 计时器（任何字节 reset，包括 `: ping`）；指数退避+jitter 重连；重连后对受影响会话 `after_seq` 回填。
 
 完成条件：不使用 EventSource；半开连接被 stale 计时器检出并重连；回填覆盖断连窗口且与去重协同不重复投递。
 

@@ -6,6 +6,7 @@ description: >
   Supports 1:1 chats and channels over a single subscribe stream,
   using a Telex bot API key. Feature parity with openclaw-telex.
 author: AI Agent Team
+requires_hermes: ">=0.21.6"
 # No hard-required env vars: the bot key normally lives in config.yaml under
 # platforms.telex.extra.accounts.<id>. Listing TELEX_API_KEY in requires_env
 # would make `hermes plugins install` prompt for it interactively and break the

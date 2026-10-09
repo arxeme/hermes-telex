@@ -2,7 +2,7 @@
 
 from hermes_telex import accounts
 from hermes_telex.dispatcher import TelexDispatcher
-from hermes_telex.types import BlockType, MessageFlag, MessageStatus
+from hermes_telex.types import BlockType, InteractionMode, MessageFlag, MessageStatus
 from tests.conftest import FakeAdapter, StubClient
 
 
@@ -97,6 +97,66 @@ async def test_channel_command_after_the_bots_own_mention():
     disp, adapter, _ = _setup({"group_policy": "open"}, channel=True)
     await disp.handle(_msg(conv="c1", mid="z", mention_ids=["bot1"], text="[@Bot](mention:bot1)"))
     assert adapter.events[0].text == "[@Bot](mention:bot1)"
+
+
+async def test_context_skips_pending_events_and_own():
+    disp, adapter, client = _setup({"group_policy": "open"}, channel=True)
+    client.conversations["c1"]["fork_of_conversation_id"] = "c0"
+    client.messages_by_conv["c1"] = [
+        _msg(seq=1, text="inherited", flags=MessageFlag.FORK_PREFIX),
+        _msg(seq=2, text="abandoned", flags=MessageFlag.FORK_PREFIX, status=MessageStatus.ABORTED),
+        _msg(seq=4, text="missed"),
+        _msg(seq=5, text="own-reply", sender="bot1"),
+        _msg(seq=6, text="half-written", status=MessageStatus.IN_PROGRESS),
+        _msg(seq=7, text="failed", status=MessageStatus.ERROR),
+        _msg(seq=8, text="member-joined", flags=MessageFlag.EVENT),
+    ]
+    client.note_turn_seq("c1", 3)
+
+    await disp.handle(_msg(seq=9, text="now", mention_ids=["bot1"]))
+
+    text = adapter.events[0].text
+    assert "inherited" in text and "missed" in text
+    for dropped in ("abandoned", "own-reply", "half-written", "failed", "member-joined"):
+        assert dropped not in text
+
+
+async def test_interaction_ids_only_where_asked():
+    disp, adapter, _ = _setup({"dm_policy": "open", "allow_from": ["*"]})
+    message = _msg(text="Two questions")
+    message["data"]["blocks"] += [
+        {"seq": 1, "type": BlockType.INTERACTION, "interaction": {
+            "id": "env", "mode": InteractionMode.SELECT, "answerer_ids": ["bot1"], "questions": [{
+                "text": "Which env?",
+                "options": [{"id": "stg", "label": "staging"}, {"id": "prd", "label": "production"}]}]}},
+        {"seq": 2, "type": BlockType.INTERACTION, "interaction": {
+            "id": "go", "mode": InteractionMode.BUTTON, "answerer_ids": ["u9"],
+            "questions": [{"options": [{"id": "ok", "label": "Approve"}]}]}},
+    ]
+
+    await disp.handle(message)
+
+    text = adapter.events[0].text
+    assert text.startswith("Two questions\n")
+    assert '<interaction message_id="m1" interaction_id="env" status="open">\n<question>\nWhich env?' in text
+    assert "- stg: staging" in text
+    assert '<interaction status="open">' in text
+    assert "- Approve" in text and "- ok:" not in text
+
+
+async def test_channel_interaction_asks_only_when_mentioned():
+    disp, adapter, _ = _setup({"group_policy": "open", "group_require_mention": False}, channel=True)
+    for seq, mention_ids in ((1, None), (2, ["bot1"])):
+        message = _msg(seq=seq, text="Anyone?", mention_ids=mention_ids)
+        message["data"]["blocks"].append({"seq": 1, "type": BlockType.INTERACTION, "interaction": {
+            "id": "env", "mode": InteractionMode.SELECT, "questions": [{
+                "text": "Which env?",
+                "options": [{"id": "stg", "label": "staging"}, {"id": "prd", "label": "production"}]}]}})
+        await disp.handle(message)
+
+    unmentioned, mentioned = (event.text for event in adapter.events)
+    assert "interaction_id" not in unmentioned and "- staging" in unmentioned
+    assert 'interaction_id="env"' in mentioned and "- stg: staging" in mentioned
 
 
 async def test_channel_allowlist():

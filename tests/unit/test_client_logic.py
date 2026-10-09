@@ -1,6 +1,8 @@
-"""T-02/T-04/T-05 client pure logic: self-echo, watermark, dedup, mention."""
+"""T-02/T-04/T-05 client logic: self-echo, watermark, dedup, subscribe stream."""
 
-from hermes_telex.client import TelexClient
+import pytest
+
+from hermes_telex.client import TelexClient, TelexError
 
 
 def _c():
@@ -61,13 +63,6 @@ def test_poison_counts_up():
     assert c.poison_count("conv", 9) == 2
 
 
-def test_self_mentioned():
-    c = _c()
-    assert c.is_self_mentioned({"data": {"mention_all": True}}) is True
-    assert c.is_self_mentioned({"data": {"mention_ids": ["bot1"]}}) is True
-    assert c.is_self_mentioned({"data": {"mention_ids": ["x"]}}) is False
-
-
 def test_turn_seq():
     c = _c()
     c.note_turn_seq("conv", 3)
@@ -92,3 +87,65 @@ def test_session_recreated_per_event_loop():
         s1 = asyncio.run(grab())
         s2 = asyncio.run(grab())
     assert s1 is not s2
+
+
+class _Stream:
+    def __init__(self, chunks, content_type="text/event-stream"):
+        self.status = 200
+        self.headers = {"Content-Type": content_type}
+        self.content = self
+        self._chunks = chunks
+        self.request_headers = None
+
+    def get(self, url, headers, timeout):
+        self.request_headers = headers
+        return self
+
+    async def iter_any(self):
+        for chunk in self._chunks:
+            yield chunk
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+async def test_subscribe_reads_server_sent_events():
+    c = _c()
+    stream = _Stream([
+        b": ping\n\n",
+        b'data: {"result": {"message": null}}\r\n\r\n',
+        b'data: {"result":\ndata: {"message": {"id": "m1", "text": "caf\xc3',
+        b'\xa9"}}}\n\n',
+    ])
+    c._get_session = lambda: stream
+    events, activity = [], []
+
+    await c.subscribe(events.append, on_activity=lambda: activity.append(1))
+
+    assert stream.request_headers["Accept"] == "text/event-stream"
+    assert events == [{"message": None}, {"message": {"id": "m1", "text": "caf\u00e9"}}]
+    assert len(activity) == 4
+
+
+async def test_subscribe_raises_a_stream_error_event():
+    c = _c()
+    c._get_session = lambda: _Stream([b'data: {"error": {"code": 16, "message": "unauthenticated"}}\n\n'])
+
+    with pytest.raises(TelexError) as raised:
+        await c.subscribe(lambda event: None)
+
+    assert raised.value.api_message == "unauthenticated"
+
+
+async def test_subscribe_refuses_a_stream_that_is_not_server_sent_events():
+    c = _c()
+    c._get_session = lambda: _Stream([b'{"result": {"message": null}}\n'], content_type="application/json")
+    events = []
+
+    with pytest.raises(TelexError):
+        await c.subscribe(events.append)
+
+    assert events == []
