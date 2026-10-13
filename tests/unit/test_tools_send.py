@@ -58,6 +58,15 @@ async def test_send_requires_exactly_one_target(wired):
     assert "exactly one target" in neither["error"]
 
 
+async def test_send_quote_requires_conversation(wired, tmp_path):
+    client, _ = wired
+    pic = tmp_path / "pic.png"
+    pic.write_bytes(b"img")
+    out = await _call(action="send_message", peer_id="u1", quote_id="q1", text="hi", media_paths=[str(pic)])
+    assert "quote_id needs conversation_id" in out["error"]
+    assert client.sent == [] and client.uploaded == []
+
+
 async def test_send_requires_content(wired):
     out = await _call(action="send_message", conversation_id="c1")
     assert "text and/or media_paths" in out["error"]

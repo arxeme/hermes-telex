@@ -59,9 +59,10 @@ async def send_telex_message(
     peer_id: str | None = None,
     text: str | None = None,
     media_units: list[tuple[str, str]] | None = None,  # [(path, kind)]
+    quote_id: str | None = None,
     chunk_limit: int = DEFAULT_TEXT_CHUNK_LIMIT,
 ) -> dict[str, Any] | None:
-    """Send text (chunked) and/or media. Returns the last message dict sent."""
+    """Send text (chunked) and/or media, quoting on the first message only. Returns the last message dict sent."""
     media_units = media_units or []
     last: dict[str, Any] | None = None
 
@@ -74,11 +75,12 @@ async def send_telex_message(
             mb = await _upload_media_block(client, path, kind)
             message_blocks.append(mb if mb else blk.text_block(f"[attachment unavailable: {path}]"))
         return await client.send_message(
-            conversation_id=conversation_id, peer_id=peer_id, blocks=message_blocks,
+            conversation_id=conversation_id, peer_id=peer_id, quote_id=quote_id, blocks=message_blocks,
         )
 
     for chunk in chunk_text(text or "", chunk_limit):
         last = await client.send_message(
-            conversation_id=conversation_id, peer_id=peer_id, blocks=[blk.text_block(chunk)],
+            conversation_id=conversation_id, peer_id=peer_id, quote_id=quote_id, blocks=[blk.text_block(chunk)],
         )
+        quote_id = None
     return last

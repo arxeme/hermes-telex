@@ -231,6 +231,7 @@ class TelexClient:
         conversation_id: str | None = None,
         peer_id: str | None = None,
         message_id: str | None = None,
+        quote_id: str | None = None,
         blocks: list[dict[str, Any]],
         status: int | None = None,
     ) -> dict[str, Any]:
@@ -241,6 +242,8 @@ class TelexClient:
             body["peer_id"] = peer_id
         if message_id:
             body["message_id"] = message_id
+        if quote_id:
+            body["quote_id"] = quote_id
         if status is not None:
             body["status"] = status
         res = await self._post("/send-message", body)
@@ -317,6 +320,13 @@ class TelexClient:
             "before_seq": before_seq,
             "after_seq": after_seq,
             "limit": limit,
+        })
+        return res.get("messages") or []
+
+    async def batch_get_messages(self, conversation_id: str, message_ids: list[str]) -> list[dict[str, Any]]:
+        res = await self._post("/batch-get-messages", {
+            "conversation_id": conversation_id,
+            "message_ids": message_ids,
         })
         return res.get("messages") or []
 
