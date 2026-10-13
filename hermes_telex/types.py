@@ -17,6 +17,7 @@ class BlockType:
     VIDEO = 3
     AUDIO = 4
     FILE = 5
+    INTERACTION = 6
     THINKING = 11
     TOOL = 12
     EVENT = 21
@@ -60,6 +61,25 @@ class ToolStatus:
     ABORTED = 3
 
 
+class InteractionMode:
+    SELECT = 1
+    BUTTON = 2
+
+
+class InteractionStatus:
+    OPEN = 0
+    ANSWERED = 1
+    SKIPPED = 2
+    EXPIRED = 3
+    CLOSED = 4
+
+
+class InteractionButtonStyle:
+    DEFAULT = 0
+    PRIMARY = 1
+    DANGER = 2
+
+
 # Media block types keyed by inbound "kind".
 MEDIA_BLOCK_TYPES = {
     "image": BlockType.IMAGE,
@@ -75,6 +95,7 @@ MEMBER_ROLE_LABELS = {0: "member", 1: "admin", 2: "owner"}
 MEMBER_ROLE_BY_NAME = {name: value for value, name in MEMBER_ROLE_LABELS.items()}
 IDENTITY_KIND_LABELS = {0: "user", 1: "mate_instance", 2: "bot"}
 TOOL_STATUS_LABELS = {0: "in_progress", 1: "success", 2: "error", 3: "aborted"}
+INTERACTION_STATUS_LABELS = {0: "open", 1: "answered", 2: "skipped", 3: "expired", 4: "closed"}
 
 # TelexConversationFlag bits, keyed by the permission name the tool speaks.
 # Restriction semantics: a set bit limits the action to the channel owner and admins.

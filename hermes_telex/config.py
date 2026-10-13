@@ -15,6 +15,9 @@ DM_POLICIES = {"open", "allowlist", "pairing"}
 GROUP_POLICIES = {"disabled", "allowlist", "open"}
 PROCESSING_INDICATORS = {"activity", "off"}
 
+# No create_chat action: Telex's send-message with peer_id creates/reuses the
+# default 1:1 itself, while create-chat always spawns a NEW titled conversation
+# - an agent picking it to "start a DM" would fragment the human's chat list.
 TOOL_KEYS = (
     "search_identities",
     "get_identities",
@@ -27,10 +30,11 @@ TOOL_KEYS = (
     "delete_conversation",
     "list_members",
     "add_members",
-    "remove_members",
     "update_member_role",
+    "remove_members",
     "get_conversation_messages",
     "send_message",
+    "answer_interaction",
 )
 
 DEFAULTS = {

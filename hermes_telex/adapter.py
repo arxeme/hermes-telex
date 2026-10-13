@@ -20,17 +20,19 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass, field
-from typing import Any
+from functools import partial
+from typing import Any, Callable
 
 from . import accounts as acct
 from . import config as cfg
+from . import interactive
 from . import send as sendmod
 from . import targets as targetmod
 from .client import TelexClient, get_telex_client
 from .dispatcher import TelexDispatcher
 from .log import get_logger, mask_key
 from .monitor import run_monitor
-from .types import DEFAULT_BASE_URL
+from .types import DEFAULT_BASE_URL, ConversationKind
 
 logger = get_logger("adapter")
 
@@ -62,6 +64,9 @@ except Exception:  # pragma: no cover
             return kwargs
 
         async def handle_message(self, event):
+            return None
+
+        def resume_typing_for_chat(self, chat_id):
             return None
 
     @dataclass
@@ -158,6 +163,7 @@ class TelexAdapter(BasePlatformAdapter):
         )
         self._dm_policy = primary.dm_policy
         self._group_policy = _gateway_group_policy(primary)
+        self._interactions = interactive.InteractionRouter(self.send, self.resume_typing_for_chat)
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -182,7 +188,12 @@ class TelexAdapter(BasePlatformAdapter):
             rt.dispatcher = TelexDispatcher(self, rt.account, rt.client)
             rt.stop_event = asyncio.Event()
             rt.monitor_task = asyncio.create_task(
-                run_monitor(rt.client, rt.dispatcher.handle, rt.stop_event, account_id=account_id)
+                run_monitor(
+                    rt.client,
+                    partial(self._handle_inbound, rt),
+                    rt.stop_event,
+                    account_id=account_id,
+                )
             )
             logger.info(
                 "connected account=%s base_url=%s key=%s dm_policy=%s",
@@ -290,6 +301,135 @@ class TelexAdapter(BasePlatformAdapter):
                             metadata: dict | None = None, **kw) -> SendResult:
         return await self._send_media(chat_id, file_path, "document", caption or "", metadata)
 
+    # -- gateway prompts ----------------------------------------------------
+
+    async def _handle_inbound(self, rt: TelexAccountRuntime, message: dict[str, Any]) -> None:
+        answered = interactive.answered_details(message, rt.client.self_id)
+        if answered is None:
+            await rt.dispatcher.handle(message)
+        else:
+            await self._interactions.handle(rt.client, rt.dispatcher, answered)
+
+    async def _answerer_ids(self, rt: TelexAccountRuntime, conversation_id: str | None) -> list[str]:
+        """Outside a Channel's sender allowlist a member's answer is refused, but an open card would let
+        that member close it for everyone; Telex takes only members as answerers."""
+        allowed = rt.account.group_sender_allow_from
+        if not conversation_id or not allowed or "*" in allowed:
+            return []
+        conversation = await rt.client.get_conversation(conversation_id)
+        if conversation.get("kind") != ConversationKind.CHANNEL:
+            return []
+        ids = [entry for entry in allowed if "@" not in entry]
+        emails = [entry for entry in allowed if "@" in entry]
+        if emails:
+            ids += [identity["id"] for identity in await rt.client.get_identities([], emails)]
+        members = {member["identity_id"] for member in await rt.client.list_members(conversation_id)}
+        listed = [identity_id for identity_id in dict.fromkeys(ids) if identity_id in members]
+        if not listed:
+            raise ValueError("group_sender_allow_from matches no channel member")
+        return listed
+
+    async def _send_prompt(
+        self,
+        chat_id: str,
+        metadata: dict | None,
+        build: Callable[[list[str], str | None], list[dict[str, Any]]],
+        prompt: interactive.Prompt,
+        timeout_s: int,
+    ) -> SendResult:
+        rt = self._runtime_for(metadata)
+        if rt is None:
+            return SendResult(success=False, error="no Telex account for this chat")
+        try:
+            conversation_id, peer_id = await self._resolve_target(chat_id, rt)
+            if not conversation_id and not peer_id:
+                return SendResult(success=False, error="chat_id names no Telex conversation")
+            answerer_ids = await self._answerer_ids(rt, conversation_id)
+            message = await rt.client.send_message(
+                conversation_id=conversation_id,
+                peer_id=peer_id,
+                blocks=build(answerer_ids, interactive.deadline_after(timeout_s)),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("%s card failed, falling back to text chat_id=%s: %s", prompt.kind, chat_id, exc)
+            return SendResult(success=False, error=f"Telex {prompt.kind} card not sent")
+        prompt.account_id = rt.account.account_id
+        prompt.conversation_id = message.get("conversation_id") or conversation_id or ""
+        self._interactions.remember(message, prompt)
+        return SendResult(success=True, message_id=message.get("id"))
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: list | None,
+        clarify_id: str,
+        session_key: str,
+        metadata: dict | None = None,
+    ) -> SendResult:
+        prompt = interactive.Prompt(
+            kind="clarify", interaction_id=clarify_id, question=question.strip(),
+            choices=tuple(str(choice).strip() for choice in choices or []),
+            multi_select=interactive.clarify_multi_select(clarify_id),
+        )
+        return await self._send_prompt(
+            chat_id, metadata,
+            lambda answerer_ids, deadline: interactive.clarify_blocks(prompt, answerer_ids, deadline),
+            prompt, interactive.clarify_timeout_s(),
+        )
+
+    async def retire_clarify_card(self, clarify_id: str, notice: str) -> None:
+        del notice
+        retired = self._interactions.take_clarify(clarify_id)
+        if retired is None:
+            return
+        message_id, prompt = retired
+        rt = self._runtimes.get(prompt.account_id)
+        if rt is not None:
+            await rt.client.close_interaction(message_id, prompt.interaction_id)
+
+    async def _send_exec_approval_prompt(self, prompt: Any) -> SendResult:
+        """A failed SendResult is the gateway's signal to send its own text prompt."""
+        request_id = self._interactions.claim_approval(prompt.session_key, prompt.command)
+        if not request_id:
+            return SendResult(success=False, error="no pending approval to render")
+        card = interactive.Prompt(
+            kind="approval", interaction_id=interactive.new_interaction_id(), session_key=prompt.session_key,
+            request_id=request_id,
+        )
+        try:
+            return await self._send_prompt(
+                prompt.chat_id, prompt.metadata,
+                lambda answerer_ids, deadline: interactive.approval_blocks(
+                    card.interaction_id, prompt.text, prompt.actions, answerer_ids, deadline
+                ),
+                card, interactive.approval_timeout_s(),
+            )
+        finally:
+            self._interactions.release_approval(request_id)
+
+    async def send_slash_confirm(
+        self,
+        chat_id: str,
+        title: str,
+        message: str,
+        session_key: str,
+        confirm_id: str,
+        metadata: dict | None = None,
+    ) -> SendResult:
+        prompt = interactive.Prompt(
+            kind="confirm", interaction_id=interactive.new_interaction_id(),
+            session_key=session_key, confirm_id=confirm_id,
+        )
+        text = f"**{title}**\n\n{message}" if title else message
+        return await self._send_prompt(
+            chat_id, metadata,
+            lambda answerer_ids, deadline: interactive.confirm_blocks(
+                prompt.interaction_id, text, answerer_ids, deadline
+            ),
+            prompt, interactive.confirm_timeout_s(),
+        )
+
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         rt = self._runtime_for(None)
         if rt is None:
@@ -298,7 +438,6 @@ class TelexAdapter(BasePlatformAdapter):
         conv_id = target.value if target and target.kind == "conversation" else chat_id
         try:
             conv = await rt.client.get_conversation(conv_id)
-            from .types import ConversationKind
             ctype = "channel" if conv.get("kind") == ConversationKind.CHANNEL else "chat"
             return {"chat_id": chat_id, "name": conv.get("title", ""), "type": ctype}
         except Exception:  # noqa: BLE001
@@ -405,6 +544,8 @@ _TELEX_PLATFORM_HINT = (
     'telex tool: telex(action="send_message", conversation_id="<16-hex id>", text="..."), or '
     "peer_id/email for a 1:1. Use it rather than the core send_message tool for Telex targets: "
     "core resolves only conversations hermes has already seen, so it fails on new ones. "
+    "To answer an <interaction> listing message_id and interaction_id, use the telex tool's "
+    "answer_interaction action. "
     "Keep replies concise and conversational."
 )
 

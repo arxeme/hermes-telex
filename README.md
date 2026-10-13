@@ -21,6 +21,7 @@ hermes-telex/
     client.py           # Telex OpenAPI client (X-API-Key)
     monitor.py          # subscribe stream: heartbeat, reconnect, backfill
     dispatcher.py       # inbound normalization -> MessageEvent
+    interactive.py      # gateway prompts as interaction cards, and their answers
     access.py           # dm/group policies (+ pairing delegated to gateway)
     accounts.py         # multi-account resolution
     blocks.py media.py send.py targets.py tools.py types.py log.py config.py
@@ -50,10 +51,13 @@ If your Hermes installation does not provide `hermes gateway restart`, stop the
 running gateway process and start it again with the command normally used in
 that deployment.
 
+Hermes refuses to load the plugin below the version in `plugin.yaml`'s
+`requires_hermes`.
+
 ## Get a bot API key
 
-1. In Voyager Telex, register a bot (owner account): `POST /voyager/v1/telex/register-bot`
-   (web SDK `telexService.registerBot`). See [docs/spec TD §2](docs/spec/td_hermes-telex-plugin_zh.md).
+1. In Voyager, sign in as the owner account and add a bot under Settings -> Telex Bots -> **Custom Bots**
+   (`POST /voyager/v1/telex/create-bot`, web SDK `telexService.createBot`; see [docs/spec TD §2](docs/spec/td_hermes-telex-plugin_zh.md)).
 2. Copy the one-time **plaintext API key** (shown only once) and the returned `bot.id`.
 3. The base URL is your Voyager host (default `https://voyager.ingarena.net`).
 
@@ -92,10 +96,11 @@ platforms:
         delete_conversation: true
         list_members: true
         add_members: true
-        remove_members: true
         update_member_role: true
+        remove_members: true
         get_conversation_messages: true
         send_message: true
+        answer_interaction: true
       accounts:                          # optional multi-bot
         support:
           api_key: "<another bot key>"
@@ -131,8 +136,8 @@ hook; YAML is the full-featured (multi-account) config.
 
 ## How it works
 
-- **Inbound** opens one long-lived `GET /openapi/telex/subscribe` stream (NDJSON,
-  not SSE) covering every conversation the bot belongs to. Mention is derived
+- **Inbound** opens one long-lived `GET /openapi/telex/subscribe` server-sent events
+  stream covering every conversation the bot belongs to. Mention is derived
   client-side from `mention_ids`/`mention_all`. On reconnect the plugin backfills
   gaps per conversation with `list-messages(after_seq)`.
 - **Outbound** posts text blocks to `send-message` (chunked, one-shot COMPLETED),
@@ -147,6 +152,11 @@ hook; YAML is the full-featured (multi-account) config.
   capability). Inbound image/file blocks are auto-downloaded into the Hermes cache
   and handed to the agent; media in history/backfill context is passed as public
   download links; outbound attachments are uploaded and sent as media blocks.
+- **Interactive messages**: `clarify`, dangerous-command approvals and slash-command
+  confirmations go out as cards answered in place; a clarify card closes when the
+  question ends, the others lapse at their deadline, and a card the server
+  refuses falls back to the text prompt. Interactions others send reach the agent
+  as `<interaction>` markup.
 - **Self-echo suppression**: the subscribe stream fans the bot's own messages back
   to it, so the plugin drops messages from its own identity (resolved via
   `get-identity` at connect; `bot_id` overrides, and send responses confirm it).
@@ -164,10 +174,12 @@ When enabled, a `telex` tool lets the agent inspect Telex, manage channels, and 
 | `rename_conversation` | retitle a channel or a non-default chat |
 | `update_conversation_settings` | allow or deny channel members an action, and replace the announcement (empty clears) |
 | `delete_conversation` | delete a channel the bot owns |
-| `list_members` / `add_members` / `remove_members` | channel membership |
+| `list_members` / `add_members` | channel membership |
 | `update_member_role` | channel roles, including handing the channel over with `owner` |
+| `remove_members` | take members out of a channel |
 | `get_conversation_messages` | history, chronological |
 | `send_message` | post into any conversation |
+| `answer_interaction` | answer or skip a question put to the bot |
 
 Member emails resolve all-or-nothing: any unresolved email fails the call before
 anything is created or added. Each action can be disabled under
@@ -220,7 +232,7 @@ a remote Voyager instance and running the local web frontend:
 
 ```bash
 scripts/local-test.sh up            # tunnel (127.0.0.1:8000) + web (:3000)
-scripts/local-test.sh register-bot --token <voyager_session JWT>
+scripts/local-test.sh create-bot --token <voyager_session JWT>
 scripts/local-test.sh env           # print hermes-telex env for this environment
 scripts/local-test.sh down
 ```

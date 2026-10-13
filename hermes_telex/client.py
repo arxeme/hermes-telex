@@ -2,8 +2,8 @@
 
 Faithful port of openclaw-telex/src/client.ts: identities/conversations/
 messages/files endpoints, LRU+TTL caches, self-echo suppression, the
-per-conversation message-sync state (cursor / settled / poison), and the NDJSON
-subscribe stream reader.
+per-conversation message-sync state (cursor / settled / poison), and the
+server-sent events subscribe stream reader.
 
 All requests carry the ``X-API-Key`` header. The API key is never logged.
 """
@@ -11,6 +11,7 @@ All requests carry the ``X-API-Key`` header. The API key is never logged.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import threading
 import time
@@ -43,6 +44,7 @@ class TelexError(Exception):
         http_status: int | None = None,
         code: int | None = None,
         api_message: str | None = None,
+        detail: Any = None,
     ):
         super().__init__(message)
         self.http_status = http_status
@@ -52,6 +54,7 @@ class TelexError(Exception):
         # 403/404 alone cannot distinguish configuration errors from lost
         # memberships, so callers branch on this.
         self.api_message = api_message
+        self.detail = detail
 
 
 # In-stream error frames carry only the stable body code (no HTTP status), so
@@ -102,6 +105,21 @@ class _TTLCache:
 
     def delete(self, key: str) -> None:
         self._d.pop(key, None)
+
+
+def _stream_result(data: str) -> dict[str, Any] | None:
+    try:
+        parsed = json.loads(data)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    if parsed.get("error"):
+        err = parsed["error"] if isinstance(parsed["error"], dict) else {}
+        msg = err.get("message", "unknown")
+        code = err.get("code")
+        raise TelexError(f"Telex subscribe stream error: {msg}", code=code, api_message=msg)
+    return parsed.get("result")
 
 
 class TelexClient:
@@ -178,12 +196,15 @@ class TelexClient:
             if res.status >= 400:
                 code = data.get("code") if isinstance(data, dict) else None
                 api_message = data.get("message") if isinstance(data, dict) else None
+                details = data.get("details") if isinstance(data, dict) else None
+                detail = details[0].get("detail") if details and isinstance(details[0], dict) else None
                 message = api_message or f"HTTP {res.status}"
                 raise TelexError(
                     f"Telex API error: {message}",
                     http_status=res.status,
                     code=code,
                     api_message=api_message,
+                    detail=detail,
                 )
             return data if isinstance(data, dict) else {}
 
@@ -226,6 +247,20 @@ class TelexClient:
         message = res.get("message", {})
         self.record_sent(message)
         return message
+
+    async def close_interaction(self, message_id: str, interaction_id: str) -> None:
+        await self._post("/close-interaction", {"message_id": message_id, "interaction_id": interaction_id})
+
+    async def answer_interaction(
+        self, message_id: str, interaction_id: str, answers: list[dict[str, Any]] | None, skip: bool
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"message_id": message_id, "interaction_id": interaction_id}
+        if answers:
+            body["answers"] = answers
+        if skip:
+            body["skip"] = True
+        res = await self._post("/answer-interaction", body)
+        return res.get("message", {})
 
     async def set_activity(self, conversation_id: str, status: str) -> None:
         await self._post("/set-activity", {"conversation_id": conversation_id, "status": status})
@@ -403,10 +438,6 @@ class TelexClient:
         res = await self._post("/add-members", {"conversation_id": conversation_id, "identity_ids": identity_ids})
         return res.get("members") or []
 
-    async def remove_members(self, conversation_id: str, identity_ids: list[str]) -> None:
-        await self._post("/remove-members", {"conversation_id": conversation_id, "identity_ids": identity_ids})
-        self._conversation_cache.delete(conversation_id)
-
     async def update_member_role(self, conversation_id: str, identity_id: str, role: int) -> dict[str, Any]:
         res = await self._post(
             "/update-member-role",
@@ -414,6 +445,10 @@ class TelexClient:
         )
         self._conversation_cache.delete(conversation_id)
         return res.get("conversation") or {}
+
+    async def remove_members(self, conversation_id: str, identity_ids: list[str]) -> None:
+        await self._post("/remove-members", {"conversation_id": conversation_id, "identity_ids": identity_ids})
+        self._conversation_cache.delete(conversation_id)
 
     async def search_identities(self, query: str, limit: int | None = None) -> list[dict[str, Any]]:
         res = await self._get("/search-identities", {"query": query, "limit": limit})
@@ -458,18 +493,20 @@ class TelexClient:
         self,
         on_event: Callable[[dict[str, Any]], Awaitable[None] | None],
         *,
+        on_activity: Callable[[], None] | None = None,
         stop_event: asyncio.Event | None = None,
     ) -> None:
-        """Consume the NDJSON subscribe stream, calling on_event per frame.
+        """Consume the server-sent events subscribe stream, calling on_event per event.
 
-        Each line is grpc-gateway wrapped: ``{"result": <event>}`` for a frame
-        (message or null heartbeat) or ``{"error": {...}}`` which ends the stream
-        (raised as TelexError). Returns when the stream closes.
+        Each event's data is grpc-gateway wrapped: ``{"result": <event>}`` for a
+        frame (message, or null for readiness) or ``{"error": {...}}``, which ends
+        the stream (raised as TelexError). on_activity runs for every chunk, ping
+        comments included. Returns when the stream closes.
         """
         url = f"{self.base_url}{OPENAPI_PREFIX}/subscribe"
-        headers = {"x-api-key": self.api_key, "Accept": "application/json"}
-        # No total timeout: this is a long-lived stream. sock_read guards silence,
-        # but the caller's stale timer is the authoritative half-open detector.
+        headers = {"x-api-key": self.api_key, "Accept": "text/event-stream"}
+        # No total or read timeout on a long-lived stream: the caller's stale timer,
+        # fed by on_activity, detects a half-open connection.
         timeout = aiohttp.ClientTimeout(total=None, sock_read=None)
         session = self._get_session()
         async with session.get(url, headers=headers, timeout=timeout) as res:
@@ -487,32 +524,33 @@ class TelexClient:
                     http_status=res.status,
                     api_message=api_message,
                 )
+            content_type = res.headers.get("Content-Type", "")
+            if not content_type.startswith("text/event-stream"):
+                raise TelexError(f"Telex subscribe failed: expected text/event-stream, got {content_type}")
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
             buffer = ""
+            data: list[str] = []
             async for chunk in res.content.iter_any():
                 if stop_event is not None and stop_event.is_set():
                     return
-                buffer += chunk.decode("utf-8", errors="replace")
-                while True:
-                    nl = buffer.find("\n")
-                    if nl < 0:
-                        break
-                    line = buffer[:nl].strip()
-                    buffer = buffer[nl + 1:]
-                    if not line:
+                if on_activity is not None:
+                    on_activity()
+                *lines, buffer = (buffer + decoder.decode(chunk)).split("\n")
+                for line in lines:
+                    line = line.removesuffix("\r")
+                    if line:
+                        field, _, value = line.partition(":")
+                        if field == "data":
+                            data.append(value.removeprefix(" "))
                         continue
-                    try:
-                        parsed = json.loads(line)
-                    except json.JSONDecodeError:
+                    if not data:
                         continue
-                    if isinstance(parsed, dict) and parsed.get("error"):
-                        err = parsed["error"]
-                        msg = err.get("message", "unknown") if isinstance(err, dict) else "unknown"
-                        code = err.get("code") if isinstance(err, dict) else None
-                        raise TelexError(f"Telex subscribe stream error: {msg}", code=code, api_message=msg)
-                    if isinstance(parsed, dict) and "result" in parsed:
-                        result = on_event(parsed["result"])
-                        if asyncio.iscoroutine(result):
-                            await result
+                    result = _stream_result("\n".join(data))
+                    data = []
+                    if result is not None:
+                        handled = on_event(result)
+                        if asyncio.iscoroutine(handled):
+                            await handled
 
     # -- self-echo / watermark / dedup -------------------------------------
 
@@ -547,14 +585,6 @@ class TelexClient:
         if self._self_id and message.get("sender_id") == self._self_id:
             return True
         return message.get("id") in self._sent_message_ids
-
-    def is_self_mentioned(self, message: dict[str, Any]) -> bool:
-        data = message.get("data") or {}
-        if data.get("mention_all"):
-            return True
-        if not self._self_id:
-            return False
-        return self._self_id in (data.get("mention_ids") or [])
 
     def is_seeded(self, conversation_id: str) -> bool:
         return conversation_id in self._sync

@@ -52,7 +52,6 @@ except Exception:  # pragma: no cover
 _MISSED_LIMIT = 50
 
 
-# Hermes exposes attachments only for media-specific message types.
 _LEADING_MENTION = re.compile(r"\s*(?:\[@(?:\\.|[^\\\]])*\])?\(mention:(?P<id>[^)]+)\)\s*")
 
 
@@ -67,6 +66,11 @@ def _strip_leading_self_mention(text: str, self_id: str | None) -> str:
     return text[match.end() :]
 
 
+def _completed(message: dict[str, Any]) -> bool:
+    return message.get("status", MessageStatus.COMPLETED) == MessageStatus.COMPLETED
+
+
+# Hermes exposes attachments only for media-specific message types.
 def _message_type(media_types: list[str]) -> MessageType:
     if not media_types:
         return MessageType.TEXT
@@ -106,12 +110,11 @@ class TelexDispatcher:
         if not conv:
             return
         seq = message.get("seq", 0)
-        status = message.get("status", MessageStatus.COMPLETED)
         flags = message.get("flags", 0)
 
         if self.client.is_own_message(message):
             return
-        if status != MessageStatus.COMPLETED:
+        if not _completed(message):
             return
         if flags & MessageFlag.EVENT:
             # Ineligible hook: idempotent, and its failure must not block
@@ -134,23 +137,22 @@ class TelexDispatcher:
 
         await self._dispatch(conv, seq, message)
 
-    async def _dispatch(self, conv: str, seq: int, message: dict[str, Any]) -> None:
-        # Eligibility needs real conversation metadata: failing open as CHAT would
-        # bypass channel access/mention gates, so a lookup failure fails the
-        # attempt (poison-counted and retried by repair).
+    async def _conversation_and_sender(self, conv: str, sender_id: str) -> tuple[dict[str, Any], bool, dict[str, Any]]:
         conversation = await self.client.get_conversation(conv)
-        kind = conversation.get("kind", ConversationKind.CHAT)
-        is_channel = kind == ConversationKind.CHANNEL
+        is_channel = conversation.get("kind", ConversationKind.CHAT) == ConversationKind.CHANNEL
+        return conversation, is_channel, await self._resolve_sender(sender_id)
 
-        sender_id = message.get("sender_id", "")
-        sender = await self._resolve_sender(sender_id)
+    async def is_allowed(self, conv: str, sender_id: str) -> bool:
+        _, is_channel, sender = await self._conversation_and_sender(conv, sender_id)
         sender_email = sender.get("email") or None
-        sender_name = sender.get("display_name") or None
-        # Preserve identity_id in agent-visible context for mention tokens.
-        if sender_name and sender_id:
-            sender_name = f"{sender_name} (id {sender_id})"
+        if not self._access_allowed(conv, is_channel, sender_id, sender_email):
+            return False
+        # Pairing lives in the gateway, which the plugin's own policy cannot see; None means the gateway
+        # could not decide, which must not authorize an answer.
+        chat_type = "group" if is_channel else "dm"
+        return self.adapter._is_sender_authorized(sender_email or sender_id, chat_type, conv) is True
 
-        was_mentioned = False
+    def _access_allowed(self, conv: str, is_channel: bool, sender_id: str, sender_email: str | None) -> bool:
         if is_channel:
             ga = access.check_group_access(
                 group_policy=self.account.group_policy,
@@ -160,21 +162,38 @@ class TelexDispatcher:
             )
             if not ga.allowed:
                 logger.info("channel drop conversation=%s reason=%s", conv, ga.reason)
-                return
-            was_mentioned = self.client.is_self_mentioned(message)
+            return ga.allowed
+        decision = access.check_dm_access(
+            dm_policy=self.account.dm_policy, allow_from=self.account.allow_from,
+            sender_id=sender_id, sender_email=sender_email,
+        )
+        if decision == access.DM_DENY:
+            logger.info("dm drop conversation=%s sender=%s", conv, sender_id)
+            return False
+        # DM_ALLOW / DM_PAIRING both forward; pairing is resolved by the gateway.
+        return True
+
+    async def _dispatch(self, conv: str, seq: int, message: dict[str, Any]) -> None:
+        sender_id = message.get("sender_id", "")
+        # Eligibility needs real conversation metadata: failing open as CHAT would
+        # bypass channel access/mention gates, so a lookup failure fails the
+        # attempt (poison-counted and retried by repair).
+        conversation, is_channel, sender = await self._conversation_and_sender(conv, sender_id)
+        sender_email = sender.get("email") or None
+        sender_name = sender.get("display_name") or None
+        # Preserve identity_id in agent-visible context for mention tokens.
+        if sender_name and sender_id:
+            sender_name = f"{sender_name} (id {sender_id})"
+
+        if not self._access_allowed(conv, is_channel, sender_id, sender_email):
+            return
+        was_mentioned = False
+        if is_channel:
+            was_mentioned = blocks.mentions(message, self.client.self_id)
             if self.account.group_require_mention and not was_mentioned:
                 return  # not addressed to the bot
-        else:
-            decision = access.check_dm_access(
-                dm_policy=self.account.dm_policy, allow_from=self.account.allow_from,
-                sender_id=sender_id, sender_email=sender_email,
-            )
-            if decision == access.DM_DENY:
-                logger.info("dm drop conversation=%s sender=%s", conv, sender_id)
-                return
-            # DM_ALLOW / DM_PAIRING both forward; pairing is resolved by the gateway.
 
-        raw_text = blocks.extract_text(message)
+        raw_text = blocks.message_text(message, self.client.self_id, direct=not is_channel)
         text = _strip_leading_self_mention(raw_text, self.client.self_id)
         media_urls: list[str] = []
         media_types: list[str] = []
@@ -252,7 +271,10 @@ class TelexDispatcher:
             self._forked_seen.add(conv)
             try:
                 msgs = await self.client.list_messages(conv, limit=_MISSED_LIMIT)
-                history.extend(m for m in msgs if (m.get("flags", 0) & MessageFlag.FORK_PREFIX))
+                history.extend(
+                    m for m in msgs
+                    if m.get("flags", 0) & MessageFlag.FORK_PREFIX and _completed(m)
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("fork history fetch failed conversation=%s: %s", conv, exc)
         # Mention gap: when a mention lands after a gap, include the skipped msgs.
@@ -263,7 +285,12 @@ class TelexDispatcher:
                     gap = await self.client.list_messages(
                         conv, after_seq=last, before_seq=seq, limit=_MISSED_LIMIT
                     )
-                    history.extend(gap)
+                    history.extend(
+                        m for m in gap
+                        if _completed(m)
+                        and not m.get("flags", 0) & (MessageFlag.EVENT | MessageFlag.FORK_PREFIX)
+                        and not self.client.is_own_message(m)
+                    )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("mention gap fetch failed conversation=%s: %s", conv, exc)
         if not history:
@@ -276,7 +303,7 @@ class TelexDispatcher:
         except Exception:  # noqa: BLE001
             idmap = {}
         for m in history:
-            parts = [blocks.extract_text(m).strip()]
+            parts = [blocks.message_text(m, self.client.self_id, direct=not is_channel).strip()]
             parts.extend(media_markdown_link(self.client, entry) for entry in blocks.media_blocks(m))
             body = "\n".join(p for p in parts if p)
             if not body:
@@ -299,9 +326,7 @@ class TelexDispatcher:
         classify them (conversation loss must drop state promptly).
         """
         try:
-            block = blocks._sorted_blocks(message)
-            event = (block[0].get("event") if block else None) or {}
-            kind = event.get("kind")
+            kind = blocks.event(message).get("kind")
         except Exception as exc:  # noqa: BLE001
             logger.debug("system event parse failed conversation=%s: %s", conv, exc)
             return
