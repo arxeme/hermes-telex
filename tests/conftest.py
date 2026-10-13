@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -61,6 +63,8 @@ class StubClient(TelexClient):
         self.posts: list[tuple[str, dict]] = []
         self.post_replies: dict[str, dict] = {}
         self.created_chats: list[dict] = []
+        self.members: dict[str, list[str]] = {}
+        self.closed_interactions: list[tuple[str, str]] = []
 
     async def _post(self, path: str, body: dict):
         # Only the low-level paths not stubbed above reach here (e.g. /mark-read
@@ -104,12 +108,23 @@ class StubClient(TelexClient):
 
     async def send_message(self, *, conversation_id=None, peer_id=None, message_id=None,
                            blocks, mention_ids=None, status=None):
+        echoed = copy.deepcopy(blocks)
+        default_deadline = (datetime.now(timezone.utc) + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for block in echoed:
+            if block.get("interaction"):
+                block["interaction"].setdefault("deadline", default_deadline)
         msg = {"id": f"m{len(self.sent)}", "sender_id": self.self_id or "bot",
-               "conversation_id": conversation_id or peer_id, "blocks": blocks, "status": status or 0}
+               "conversation_id": conversation_id or peer_id, "data": {"blocks": echoed}, "status": status or 0}
         self.sent.append({"conversation_id": conversation_id, "peer_id": peer_id,
                           "message_id": message_id, "blocks": blocks, "status": status})
         self.record_sent(msg)
         return msg
+
+    async def close_interaction(self, message_id, interaction_id):
+        self.closed_interactions.append((message_id, interaction_id))
+
+    async def list_members(self, conversation_id):
+        return [{"identity_id": identity_id} for identity_id in self.members.get(conversation_id, [])]
 
     async def set_activity(self, conversation_id, status):
         self.activities.append((conversation_id, status))

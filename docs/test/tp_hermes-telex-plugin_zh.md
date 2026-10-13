@@ -19,7 +19,7 @@
 
 - 自动化测试不依赖真实 Telex 凭证（mock OpenAPI 与 subscribe 流）。
 - hermes-agent 仓库零改动、零 monkey-patch；测试覆盖 `register(ctx)` 经 `ctx.register_platform` 的注册路径与 hooks。
-- 入站只有 subscribe 单通道；测试覆盖 NDJSON 解析、心跳 stale、重连回填。
+- 入站只有 subscribe 单通道；测试覆盖 SSE 解析、stale 检出、重连回填。
 - Telex 无 thread；目标解析与 source 归一不含 thread 维度。
 - **功能对标 openclaw-telex**：TD §12 对标清单逐项须有用例覆盖。
 - 访问策略由插件内实现（`enforces_own_access_policy`）：dm(open/allowlist/pairing)+group(disabled/allowlist/open)+sender+require_mention；
@@ -33,7 +33,7 @@
 | 单元测试 | `pytest` | 配置、client、blocks、normalizer、registration、目标解析 |
 | 异步测试 | `pytest-asyncio` | subscribe 流、async OpenAPI client、流式发送 |
 | HTTP mock | `aiohttp` test server 或 fixture | Telex OpenAPI mock、upload/download |
-| 流 mock | 可控字节流/`aiohttp` streaming response | subscribe NDJSON、心跳、断流、回填 |
+| 流 mock | 可控字节流/`aiohttp` streaming response | subscribe SSE、ping、断流、回填 |
 | 环境隔离 | pytest fixture | env var、registry、缓存状态隔离 |
 | 真实联调 | **本地 tunnel 到远端 Voyager 实例** + 真实 bot key + hermes gateway | 端到端验证（见 §2.1） |
 
@@ -145,9 +145,9 @@ tests/
 
 | 用例 | 断言 |
 | --- | --- |
-| T-04-01 逐行解析 | NDJSON 每行独立 `json.loads`；非 SSE |
-| T-04-02 心跳重置 | `result.message=null` 空帧重置 stale 计时器，不当作消息 |
-| T-04-03 stale 检出 | 超过 60s 无任何帧 → 判半开 → 触发重连 |
+| T-04-01 事件解析 | 按 SSE 事件解析：多行 `data` 拼接、`:` 注释跳过、CRLF、跨块 UTF-8；`Content-Type` 不是 `text/event-stream` 时报错 |
+| T-04-02 活动重置 | 收到任何字节（包括 `: ping`）都重置 stale 计时器；`result.message=null` 不当作消息 |
+| T-04-03 stale 检出 | 超过 45s 未收到任何字节 → 判半开 → 触发重连 |
 | T-04-04 error 帧重连 | `{"error":...}` 后流结束并重连 |
 | T-04-05 退避重连 | 重连指数退避 + jitter；恢复后继续消费 |
 | T-04-06 回填 | 重连后对受影响会话 `list-messages?after_seq=<最高 seq>` 回填 |
@@ -291,7 +291,7 @@ tests/
 ## 6. 测试数据与 mock 约定
 
 - **mock OpenAPI**：按 OpenAPI guide 返回结构（snake_case、enum 为整数、零值字段照常输出、id 为 16-hex）。
-- **mock subscribe 流**：发出 `{"result":{"message":null}}` 心跳与 `{"result":{"message":{...}}}` 消息，
+- **mock subscribe 流**：以 SSE 事件发出 `{"result":{"message":null}}` 就绪与 `{"result":{"message":{...}}}` 消息，夹带 `: ping` 注释，
   支持注入 `{"error":...}` 模拟断流；用于 stale/重连/回填测试。
 - **身份**：固定一组 identity（含 bot 自身、若干 user），覆盖 email 有/无、active/retired。
 - **不得**在仓库内提交真实 `TELEX_API_KEY`；联调 key 仅置于本地未跟踪配置。

@@ -14,7 +14,7 @@ from . import accounts as acct
 from . import blocks as blocks_mod
 from . import config as cfg
 from . import media as media_mod
-from .client import get_telex_client
+from .client import TelexError, get_telex_client
 from .send import send_telex_message
 from .log import get_logger
 from .types import (
@@ -30,27 +30,6 @@ from .types import (
 
 logger = get_logger("tool")
 
-# No create_chat action: Telex's send-message with peer_id creates/reuses the
-# default 1:1 itself, while create-chat always spawns a NEW titled conversation
-# — an agent picking it to "start a DM" would fragment the human's chat list.
-ACTIONS = (
-    "search_identities",
-    "get_identities",
-    "update_identity",
-    "list_conversations",
-    "get_conversation_info",
-    "create_channel",
-    "rename_conversation",
-    "update_conversation_settings",
-    "delete_conversation",
-    "list_members",
-    "add_members",
-    "update_member_role",
-    "remove_members",
-    "get_conversation_messages",
-    "send_message",
-)
-
 TELEX_TOOL_SCHEMA: dict[str, Any] = {
     "name": "telex",
     "description": (
@@ -60,7 +39,7 @@ TELEX_TOOL_SCHEMA: dict[str, Any] = {
         "list_conversations, get_conversation_info, create_channel, rename_conversation, "
         "update_conversation_settings, delete_conversation (channels only), "
         "list_members, add_members, update_member_role, remove_members, "
-        "get_conversation_messages, send_message. "
+        "get_conversation_messages, send_message, answer_interaction. "
         "Use send_message to post into any Telex conversation — give it "
         "conversation_id (from list_conversations/create_channel) or peer_id/email "
         "for a 1:1. It reaches conversations the core send_message tool cannot, "
@@ -73,12 +52,13 @@ TELEX_TOOL_SCHEMA: dict[str, Any] = {
         "conversation; every other conversation result is full. update_conversation_settings "
         "takes permission names and the announcement: allow enables an action for all members, "
         "deny restricts it to the owner and admins; the owner and admins are never restricted "
-        "by any of them. "
+        "by any of them. answer_interaction answers an <interaction> listing message_id and "
+        "interaction_id, one answer per question in order. "
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": list(ACTIONS)},
+            "action": {"type": "string", "enum": list(cfg.TOOL_KEYS)},
             "query": {"type": "string", "description": "search_identities: name/email text"},
             "ids": {"type": "array", "items": {"type": "string"}, "description": "get_identities: identity ids"},
             "emails": {"type": "array", "items": {"type": "string"}, "description": "get_identities/create_channel/add_members/remove_members: emails"},
@@ -101,6 +81,20 @@ TELEX_TOOL_SCHEMA: dict[str, Any] = {
             "peer_id": {"type": "string", "description": "send_message: target identity id for a 1:1 chat"},
             "email": {"type": "string", "description": "send_message: target identity email for a 1:1 chat; update_member_role: the member to act on"},
             "media_paths": {"type": "array", "items": {"type": "string"}, "description": "send_message: local file paths to attach (each <= 20 MiB)"},
+            "message_id": {"type": "string", "description": "answer_interaction: the message carrying the interaction"},
+            "interaction_id": {"type": "string", "description": "answer_interaction: the interaction's id within the message"},
+            "answers": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "option_ids": {"type": "array", "items": {"type": "string"}, "description": "Ids from the question's option list"},
+                        "text": {"type": "string", "description": "Typed answer, where free_text is set"},
+                    },
+                },
+                "description": "answer_interaction: one answer per question, in order",
+            },
+            "skip": {"type": "boolean", "description": "answer_interaction: skip the interaction instead of answering"},
         },
         "required": ["action"],
     },
@@ -198,7 +192,7 @@ def _member_out(m: dict[str, Any], idmap: dict[str, dict[str, Any]]) -> dict[str
     }
 
 
-def _message_out(m: dict[str, Any]) -> dict[str, Any]:
+def _message_out(m: dict[str, Any], self_id: str | None, direct: bool) -> dict[str, Any]:
     from . import blocks
     return {
         "id": m.get("id"),
@@ -206,7 +200,7 @@ def _message_out(m: dict[str, Any]) -> dict[str, Any]:
         "sender_id": m.get("sender_id"),
         "status": MESSAGE_STATUS_LABELS.get(m.get("status"), m.get("status")),
         "flags": message_flag_labels(m.get("flags", 0)),
-        "text": blocks.extract_text(m),
+        "text": blocks.message_text(m, self_id, direct=direct),
     }
 
 
@@ -268,7 +262,7 @@ async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
     # The tool registry invokes handlers as handler(args, **kwargs) — e.g. task_id.
     # Accept and ignore the extra kwargs.
     action = (args or {}).get("action")
-    if action not in ACTIONS:
+    if action not in cfg.TOOL_KEYS:
         return json.dumps({"error": f"unknown action: {action}"})
     client, account = _resolve_client_and_account()
     if account == "ambiguous":
@@ -370,7 +364,9 @@ async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
                 after_seq=args.get("after_seq"), limit=args.get("limit") or 50,
             )
             msgs = sorted(msgs, key=lambda m: m.get("seq", 0))
-            return json.dumps({"messages": [_message_out(m) for m in msgs]})
+            conversation = await client.get_conversation(args["conversation_id"])
+            direct = conversation.get("kind", ConversationKind.CHAT) != ConversationKind.CHANNEL
+            return json.dumps({"messages": [_message_out(m, client.self_id, direct) for m in msgs]})
         if action == "send_message":
             conversation_id = (args.get("conversation_id") or "").strip()
             peer_id, err = await _resolve_peer_id(client, args)
@@ -390,10 +386,18 @@ async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
                 text=text or None, media_units=units or None,
             )
             return json.dumps({"message": _sent_out(message)})
+        if action == "answer_interaction":
+            message = await client.answer_interaction(
+                args["message_id"], args["interaction_id"], args.get("answers"), bool(args.get("skip")),
+            )
+            return json.dumps({"message": _sent_out(message)})
     except KeyError as exc:
         return json.dumps({"error": f"missing required arg: {exc}"})
     except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": str(exc)})
+        out: dict[str, Any] = {"error": str(exc)}
+        if isinstance(exc, TelexError) and exc.detail:
+            out["detail"] = exc.detail
+        return json.dumps(out)
     return json.dumps({"error": "unhandled action"})
 
 

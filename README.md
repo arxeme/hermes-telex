@@ -21,6 +21,7 @@ hermes-telex/
     client.py           # Telex OpenAPI client (X-API-Key)
     monitor.py          # subscribe stream: heartbeat, reconnect, backfill
     dispatcher.py       # inbound normalization -> MessageEvent
+    interactive.py      # gateway prompts as interaction cards, and their answers
     access.py           # dm/group policies (+ pairing delegated to gateway)
     accounts.py         # multi-account resolution
     blocks.py media.py send.py targets.py tools.py types.py log.py config.py
@@ -49,6 +50,9 @@ hermes gateway restart
 If your Hermes installation does not provide `hermes gateway restart`, stop the
 running gateway process and start it again with the command normally used in
 that deployment.
+
+Hermes refuses to load the plugin below the version in `plugin.yaml`'s
+`requires_hermes`.
 
 ## Get a bot API key
 
@@ -96,6 +100,7 @@ platforms:
         remove_members: true
         get_conversation_messages: true
         send_message: true
+        answer_interaction: true
       accounts:                          # optional multi-bot
         support:
           api_key: "<another bot key>"
@@ -131,8 +136,8 @@ hook; YAML is the full-featured (multi-account) config.
 
 ## How it works
 
-- **Inbound** opens one long-lived `GET /openapi/telex/subscribe` stream (NDJSON,
-  not SSE) covering every conversation the bot belongs to. Mention is derived
+- **Inbound** opens one long-lived `GET /openapi/telex/subscribe` server-sent events
+  stream covering every conversation the bot belongs to. Mention is derived
   client-side from `mention_ids`/`mention_all`. On reconnect the plugin backfills
   gaps per conversation with `list-messages(after_seq)`.
 - **Outbound** posts text blocks to `send-message` (chunked, one-shot COMPLETED),
@@ -147,6 +152,11 @@ hook; YAML is the full-featured (multi-account) config.
   capability). Inbound image/file blocks are auto-downloaded into the Hermes cache
   and handed to the agent; media in history/backfill context is passed as public
   download links; outbound attachments are uploaded and sent as media blocks.
+- **Interactive messages**: `clarify`, dangerous-command approvals and slash-command
+  confirmations go out as cards answered in place; a clarify card closes when the
+  question ends, the others lapse at their deadline, and a card the server
+  refuses falls back to the text prompt. Interactions others send reach the agent
+  as `<interaction>` markup.
 - **Self-echo suppression**: the subscribe stream fans the bot's own messages back
   to it, so the plugin drops messages from its own identity (resolved via
   `get-identity` at connect; `bot_id` overrides, and send responses confirm it).
@@ -169,6 +179,7 @@ When enabled, a `telex` tool lets the agent inspect Telex, manage channels, and 
 | `remove_members` | take members out of a channel |
 | `get_conversation_messages` | history, chronological |
 | `send_message` | post into any conversation |
+| `answer_interaction` | answer or skip a question put to the bot |
 
 Member emails resolve all-or-nothing: any unresolved email fails the call before
 anything is created or added. Each action can be disabled under

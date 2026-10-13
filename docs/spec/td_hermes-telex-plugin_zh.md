@@ -56,7 +56,7 @@
 ```mermaid
 flowchart LR
   Telex["Voyager Telex Open API"]
-  Stream["subscribe NDJSON 流\n(TelexStreamClient/monitor)"]
+  Stream["subscribe SSE 流\n(TelexStreamClient/monitor)"]
   Adapter["TelexAdapter\n(BasePlatformAdapter 子类)"]
   Access["access 策略\n(dm/group/pairing)"]
   Registry["PlatformRegistry"]
@@ -145,7 +145,7 @@ hermes-telex/                ← plugin root (~/.hermes/plugins/telex/)
 ├── hermes_telex/
 │   ├── adapter.py           # TelexAdapter + register(ctx) + callbacks + hooks + enforces_own_access_policy/_dm_policy
 │   ├── client.py            # Telex OpenAPI client（X-API-Key）+ 缓存 + 自发抑制 + backfill watermark
-│   ├── stream.py            # subscribe NDJSON + 心跳 stale + 重连退避（monitor 职责）
+│   ├── stream.py            # subscribe SSE + 心跳 stale + 重连退避（monitor 职责）
 │   ├── dispatcher.py        # Message→MessageEvent：watermark/dedup/skip/access/内容抽取/fork/mention 回填
 │   ├── access.py            # dm/group 策略（open/allowlist/pairing、disabled/allowlist/open、sender allowlist、require_mention）
 │   ├── accounts.py          # 多账号解析与合并（accounts.<id> 覆盖）
@@ -285,8 +285,8 @@ dedup：`mark_processed(id)` 首见 true。错误体 `{code,message}` 映射统�
 
 ### 7.3 Subscribe Stream / Monitor（stream.py）
 
-单一入站。逐行 `json.loads`：`result.message` 真实消息/系统事件→dispatcher；`result.message=null` 心跳→reset stale；`error` 帧→重连。
-心跳 stale 60s（任意帧 reset）；重连指数退避 1s→30s（×2）；**HTTP 401/403 视为致命**（不重连）。
+单一入站，`Accept: text/event-stream`。每个事件的 `data` 做 `json.loads`：`result.message` 真实消息/系统事件→dispatcher；`result.message=null` 是就绪事件；`error` 事件→重连；`:` 开头的注释（服务端每 15s 的 `: ping`）跳过。
+stale 45s（收到任何字节都 reset，包括 ping）；重连指数退避 1s→30s（×2）；**鉴权失败视为致命**（不重连）。
 readiness 帧后先 seed 每会话 backfill（`list-messages` 分页 100/页、最多 50 页，超页 warn），再放行 live 帧（保序）。
 
 ### 7.4 Dispatcher（dispatcher.py）
@@ -350,7 +350,7 @@ dedup（LRU max 1000/2000，TTL 30min）、self 已发 id LRU(2000)、identity �
 
 | 功能 | 对标点 | hermes-telex |
 |---|---|---|
-| subscribe 单流入站 + NDJSON + 心跳 60s + 退避 1s→30s | client/monitor | §7.3 |
+| subscribe 单流入站 + SSE + stale 45s + 退避 1s→30s | client/monitor | §7.3 |
 | 重连 backfill（after_seq，避开 pending IN_PROGRESS） | client watermark | §7.2/7.3 |
 | dedup（backfill/live 重叠） | mark_processed | §7.4 |
 | 自发抑制（self_id 学习 + bot_id + 已发 id LRU2000） | client | §7.1 |
