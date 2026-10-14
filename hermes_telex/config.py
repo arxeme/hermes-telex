@@ -33,6 +33,7 @@ TOOL_KEYS = (
     "update_member_role",
     "remove_members",
     "get_conversation_messages",
+    "get_message",
     "send_message",
     "answer_interaction",
 )

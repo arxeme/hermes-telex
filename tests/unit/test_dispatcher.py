@@ -1,7 +1,9 @@
-"""T-05/T-13 dispatcher: gates, access, mention, content, dedup."""
+"""T-05/T-13 dispatcher: gates, access, mention, content, quotes, dedup."""
+
+import pytest
 
 from hermes_telex import accounts
-from hermes_telex.dispatcher import TelexDispatcher
+from hermes_telex.dispatcher import MessageType, TelexDispatcher
 from hermes_telex.types import BlockType, InteractionMode, MessageFlag, MessageStatus
 from tests.conftest import FakeAdapter, StubClient
 
@@ -184,7 +186,51 @@ async def test_inbound_media_downloaded():
     await disp.handle(_msg(text="", media={"file_id": "f1", "name": "p.png"}))
     ev = adapter.events[0]
     assert ev.media_urls and ev.media_types
+    assert ev.media_text_inlined == [False]
     assert "[image: p.png]" in ev.text   # placeholder used when text empty
+
+
+@pytest.mark.parametrize("sender, own, text", [
+    ("u2", False, "Bob (id u2): earlier words"),
+    ("bot1", True, "earlier words"),
+])
+async def test_quote_fills_reply_fields(sender, own, text):
+    disp, adapter, client = _setup({"dm_policy": "open", "allow_from": ["*"]})
+    client.identities["u2"] = {"id": "u2", "display_name": "Bob"}
+    client.post_replies["/batch-get-messages"] = {"messages": [_msg(sender=sender, text="earlier words", mid="q1")]}
+
+    await disp.handle(dict(_msg(seq=2, text="what about this?"), quote_id="q1"))
+
+    ev = adapter.events[0]
+    assert (ev.reply_to_message_id, ev.reply_to_text, ev.reply_to_is_own_message) == ("q1", text, own)
+
+
+@pytest.mark.parametrize("current_media, media_types, message_type", [
+    (None, ["image/gif"], MessageType.TEXT),
+    ({"file_id": "f0", "name": "now.png"}, ["image/png", "image/gif"], MessageType.PHOTO),
+])
+async def test_quoted_media_follows_current_media(current_media, media_types, message_type):
+    disp, adapter, client = _setup({"dm_policy": "open", "allow_from": ["*"]})
+    quoted = _msg(text="", mid="q1", media={"file_id": "f1", "name": "then.gif", "mime": "image/gif"})
+    client.post_replies["/batch-get-messages"] = {"messages": [quoted]}
+
+    await disp.handle(dict(_msg(seq=2, text="and this?", media=current_media), quote_id="q1"))
+
+    ev = adapter.events[0]
+    assert (ev.media_types, ev.message_type) == (media_types, message_type)
+
+
+async def test_failed_quote_read_dispatches_without_quote():
+    disp, adapter, client = _setup({"dm_policy": "open", "allow_from": ["*"]})
+
+    async def unavailable(*_args):
+        raise RuntimeError("batch-get-messages unavailable")
+
+    client.batch_get_messages = unavailable
+
+    await disp.handle(dict(_msg(seq=2, text="and this?"), quote_id="q1"))
+
+    assert adapter.events[0].reply_to_message_id is None
 
 
 async def test_telex_tool_handler_accepts_registry_kwargs():

@@ -106,7 +106,7 @@ class StubClient(TelexClient):
     async def resolve_identities(self, ids):
         return {i: self.identities[i] for i in ids if i in self.identities}
 
-    async def send_message(self, *, conversation_id=None, peer_id=None, message_id=None,
+    async def send_message(self, *, conversation_id=None, peer_id=None, message_id=None, quote_id=None,
                            blocks, mention_ids=None, status=None):
         echoed = copy.deepcopy(blocks)
         default_deadline = (datetime.now(timezone.utc) + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -116,7 +116,7 @@ class StubClient(TelexClient):
         msg = {"id": f"m{len(self.sent)}", "sender_id": self.self_id or "bot",
                "conversation_id": conversation_id or peer_id, "data": {"blocks": echoed}, "status": status or 0}
         self.sent.append({"conversation_id": conversation_id, "peer_id": peer_id,
-                          "message_id": message_id, "blocks": blocks, "status": status})
+                          "message_id": message_id, "quote_id": quote_id, "blocks": blocks, "status": status})
         self.record_sent(msg)
         return msg
 

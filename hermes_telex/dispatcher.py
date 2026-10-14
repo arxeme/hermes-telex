@@ -1,10 +1,11 @@
 """Inbound normalization: Telex message dict -> MessageEvent -> handle_message.
 
 Port of openclaw-telex bot.ts inbound path: self-echo suppression, status/flag
-gates, access (dm/group/pairing), content + media extraction, identity
-resolution, fork inheritance and mention-gap context, and system-event state
-sync. Settlement, dedup, and per-conversation serialization live in monitor.py;
-a raised exception here counts as one handle failure toward the poison cap.
+gates, access (dm/group/pairing), content + media extraction, the quoted
+message, identity resolution, fork inheritance and mention-gap context, and
+system-event state sync. Settlement, dedup, and per-conversation serialization
+live in monitor.py; a raised exception here counts as one handle failure toward
+the poison cap.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from . import access, blocks
 from .accounts import ResolvedTelexAccount
 from .client import TelexClient, auth_error, conversation_gone
 from .log import get_logger
-from .media import media_markdown_link, resolve_inbound_media
+from .media import InboundMedia, media_markdown_link, resolve_inbound_media
 from .types import ConversationKind, MessageFlag, MessageStatus
 
 logger = get_logger("inbound")
@@ -45,8 +46,10 @@ except Exception:  # pragma: no cover
         message_id: str | None = None
         media_urls: list = field(default_factory=list)
         media_types: list = field(default_factory=list)
+        media_text_inlined: list = field(default_factory=list)
         reply_to_message_id: str | None = None
         reply_to_text: str | None = None
+        reply_to_is_own_message: bool = False
 
 
 _MISSED_LIMIT = 50
@@ -66,11 +69,15 @@ def _strip_leading_self_mention(text: str, self_id: str | None) -> str:
     return text[match.end() :]
 
 
+def _speaker(identity: dict[str, Any], sender_id: str) -> str:
+    who = identity.get("display_name") or "user"
+    return f"{who} (id {sender_id})" if sender_id else who
+
+
 def _completed(message: dict[str, Any]) -> bool:
     return message.get("status", MessageStatus.COMPLETED) == MessageStatus.COMPLETED
 
 
-# Hermes exposes attachments only for media-specific message types.
 def _message_type(media_types: list[str]) -> MessageType:
     if not media_types:
         return MessageType.TEXT
@@ -214,6 +221,13 @@ class TelexDispatcher:
             text = " ".join(placeholders)
         if not text:
             text = raw_text
+        # Typed from the sender's own media, before the quote's: Hermes routes each attachment by its
+        # MIME, but queues a photo-typed message behind a busy turn instead of interrupting it.
+        message_type = _message_type(media_types)
+        quote_fields, quote_media = await self._quote(conv, message, is_channel)
+        for item in quote_media:
+            media_urls.append(item.path)
+            media_types.append(item.content_type)
 
         # Context put ahead of the text would hide a command.
         if not text.lstrip().startswith("/"):
@@ -239,12 +253,15 @@ class TelexDispatcher:
         raw["telex_account_id"] = self.account.account_id
         event = MessageEvent(
             text=text,
-            message_type=_message_type(media_types),
+            message_type=message_type,
             source=source,
             raw_message=raw,
             message_id=message.get("id"),
             media_urls=media_urls,
             media_types=media_types,
+            # Hermes reads a missing flag as the file's text already being in the message text.
+            media_text_inlined=[False] * len(media_urls),
+            **quote_fields,
         )
         result = self.adapter.handle_message(event)
         if asyncio.iscoroutine(result):
@@ -252,6 +269,45 @@ class TelexDispatcher:
         # Only after a successful handoff: a failed attempt's retry must still
         # see the pre-turn seq, or its mention-gap context would come up empty.
         self.client.note_turn_seq(conv, seq)
+
+    async def _quote(
+        self, conv: str, message: dict[str, Any], is_channel: bool,
+    ) -> tuple[dict[str, Any], list[InboundMedia]]:
+        quote_id = message.get("quote_id")
+        if not quote_id:
+            return {}, []
+        try:
+            found = await self.client.batch_get_messages(conv, [quote_id])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("quoted message read failed conversation=%s quote=%s: %s", conv, quote_id, exc)
+            return {}, []
+        if not found:
+            return {}, []
+        source = found[0]
+        body = self._message_body(source, is_channel)
+        if not body:
+            return {}, []
+        is_own = self.client.is_own_message(source)
+        # Hermes renders a quote as [Replying to: "..."] without its author, and a quote of the bot's
+        # own message as [Replying to your previous message: "..."].
+        if not is_own:
+            sender_id = source.get("sender_id", "")
+            try:
+                identity = await self.client.resolve_identity(sender_id) or {}
+            except Exception:  # noqa: BLE001
+                identity = {}
+            body = f"{_speaker(identity, sender_id)}: {body}"
+        media, _ = await resolve_inbound_media(self.client, blocks.media_blocks(source))
+        return {
+            "reply_to_message_id": quote_id,
+            "reply_to_text": body,
+            "reply_to_is_own_message": is_own,
+        }, media
+
+    def _message_body(self, message: dict[str, Any], is_channel: bool) -> str:
+        parts = [blocks.message_text(message, self.client.self_id, direct=not is_channel).strip()]
+        parts.extend(media_markdown_link(self.client, entry) for entry in blocks.media_blocks(message))
+        return "\n".join(p for p in parts if p)
 
     async def _resolve_sender(self, sender_id: str) -> dict[str, Any]:
         if not sender_id:
@@ -303,14 +359,11 @@ class TelexDispatcher:
         except Exception:  # noqa: BLE001
             idmap = {}
         for m in history:
-            parts = [blocks.message_text(m, self.client.self_id, direct=not is_channel).strip()]
-            parts.extend(media_markdown_link(self.client, entry) for entry in blocks.media_blocks(m))
-            body = "\n".join(p for p in parts if p)
+            body = self._message_body(m, is_channel)
             if not body:
                 continue
             sender = m.get("sender_id", "")
-            who = idmap.get(sender, {}).get("display_name") or "user"
-            lines.append(f"{who} (id {sender}): {body}" if sender else f"{who}: {body}")
+            lines.append(f"{_speaker(idmap.get(sender, {}), sender)}: {body}")
         if not lines:
             return None
         return (

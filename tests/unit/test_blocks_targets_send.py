@@ -46,9 +46,10 @@ def test_chunk_text():
 async def test_send_text_chunks(tmp_path):
     from tests.conftest import StubClient
     c = StubClient()
-    await send.send_telex_message(c, conversation_id="conv", text="y" * 25, chunk_limit=10)
+    await send.send_telex_message(c, conversation_id="conv", text="y" * 25, quote_id="q1", chunk_limit=10)
     assert len(c.sent) == 3
     assert all(s["conversation_id"] == "conv" for s in c.sent)
+    assert [s["quote_id"] for s in c.sent] == ["q1", None, None]
 
 
 async def test_send_media_single_message(tmp_path):
