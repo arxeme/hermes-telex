@@ -39,7 +39,7 @@ TELEX_TOOL_SCHEMA: dict[str, Any] = {
         "list_conversations, get_conversation_info, create_channel, rename_conversation, "
         "update_conversation_settings, delete_conversation (channels only), "
         "list_members, add_members, update_member_role, remove_members, "
-        "get_conversation_messages, send_message, answer_interaction. "
+        "get_conversation_messages, get_message, send_message, answer_interaction. "
         "Use send_message to post into any Telex conversation — give it "
         "conversation_id (from list_conversations/create_channel) or peer_id/email "
         "for a 1:1. It reaches conversations the core send_message tool cannot, "
@@ -81,7 +81,8 @@ TELEX_TOOL_SCHEMA: dict[str, Any] = {
             "peer_id": {"type": "string", "description": "send_message: target identity id for a 1:1 chat"},
             "email": {"type": "string", "description": "send_message: target identity email for a 1:1 chat; update_member_role: the member to act on"},
             "media_paths": {"type": "array", "items": {"type": "string"}, "description": "send_message: local file paths to attach (each <= 20 MiB)"},
-            "message_id": {"type": "string", "description": "answer_interaction: the message carrying the interaction"},
+            "quote_id": {"type": "string", "description": "send_message: id of a message in conversation_id to quote (quoting notifies no one; in the conversation you are handling, your normal reply still follows as a separate message)"},
+            "message_id": {"type": "string", "description": "get_message: the message to read; answer_interaction: the message carrying the interaction"},
             "interaction_id": {"type": "string", "description": "answer_interaction: the interaction's id within the message"},
             "answers": {
                 "type": "array",
@@ -194,7 +195,7 @@ def _member_out(m: dict[str, Any], idmap: dict[str, dict[str, Any]]) -> dict[str
 
 def _message_out(m: dict[str, Any], self_id: str | None, direct: bool) -> dict[str, Any]:
     from . import blocks
-    return {
+    out = {
         "id": m.get("id"),
         "seq": m.get("seq"),
         "sender_id": m.get("sender_id"),
@@ -202,6 +203,29 @@ def _message_out(m: dict[str, Any], self_id: str | None, direct: bool) -> dict[s
         "flags": message_flag_labels(m.get("flags", 0)),
         "text": blocks.message_text(m, self_id, direct=direct),
     }
+    if m.get("quote_id"):
+        out["quote_id"] = m["quote_id"]
+    return out
+
+
+async def _messages_out(client, conversation_id: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    conversation = await client.get_conversation(conversation_id)
+    direct = conversation.get("kind", ConversationKind.CHAT) != ConversationKind.CHANNEL
+    quote_ids = list(dict.fromkeys(m["quote_id"] for m in messages if m.get("quote_id")))
+    quoted: dict[str, dict[str, Any]] = {}
+    if quote_ids:
+        try:
+            quoted = {q["id"]: q for q in await client.batch_get_messages(conversation_id, quote_ids)}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("quoted messages read failed conversation=%s: %s", conversation_id, exc)
+    out = []
+    for m in messages:
+        item = _message_out(m, client.self_id, direct)
+        source = quoted.get(m.get("quote_id", ""))
+        if source:
+            item["quoted_message"] = _message_out(source, client.self_id, direct)
+        out.append(item)
+    return out
 
 
 # batch-get-identities silently skips unknown emails, so completeness is checked
@@ -364,9 +388,13 @@ async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
                 after_seq=args.get("after_seq"), limit=args.get("limit") or 50,
             )
             msgs = sorted(msgs, key=lambda m: m.get("seq", 0))
-            conversation = await client.get_conversation(args["conversation_id"])
-            direct = conversation.get("kind", ConversationKind.CHAT) != ConversationKind.CHANNEL
-            return json.dumps({"messages": [_message_out(m, client.self_id, direct) for m in msgs]})
+            return json.dumps({"messages": await _messages_out(client, args["conversation_id"], msgs)})
+        if action == "get_message":
+            found = await client.batch_get_messages(args["conversation_id"], [args["message_id"]])
+            if not found:
+                return json.dumps({"error": "message not found in this conversation"})
+            [message] = await _messages_out(client, args["conversation_id"], found)
+            return json.dumps({"message": message})
         if action == "send_message":
             conversation_id = (args.get("conversation_id") or "").strip()
             peer_id, err = await _resolve_peer_id(client, args)
@@ -376,6 +404,8 @@ async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
                 return json.dumps({
                     "error": "provide exactly one target: conversation_id, or peer_id/email"
                 })
+            if args.get("quote_id") and not conversation_id:
+                return json.dumps({"error": "quote_id needs conversation_id"})
             text = args.get("text") or ""
             paths = args.get("media_paths") or []
             if not text and not paths:
@@ -383,7 +413,7 @@ async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
             units = [(p, media_mod.kind_for_path(p)) for p in paths]
             message = await send_telex_message(
                 client, conversation_id=conversation_id or None, peer_id=peer_id,
-                text=text or None, media_units=units or None,
+                text=text or None, media_units=units or None, quote_id=args.get("quote_id") or None,
             )
             return json.dumps({"message": _sent_out(message)})
         if action == "answer_interaction":

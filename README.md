@@ -99,6 +99,7 @@ platforms:
         update_member_role: true
         remove_members: true
         get_conversation_messages: true
+        get_message: true
         send_message: true
         answer_interaction: true
       accounts:                          # optional multi-bot
@@ -157,6 +158,7 @@ hook; YAML is the full-featured (multi-account) config.
   question ends, the others lapse at their deadline, and a card the server
   refuses falls back to the text prompt. Interactions others send reach the agent
   as `<interaction>` markup.
+- **Quotes**: when a message quotes another, the agent sees the quoted message, media included. The agent's replies never quote; it quotes only through the `telex` tool's `send_message` `quote_id`.
 - **Self-echo suppression**: the subscribe stream fans the bot's own messages back
   to it, so the plugin drops messages from its own identity (resolved via
   `get-identity` at connect; `bot_id` overrides, and send responses confirm it).
@@ -178,6 +180,7 @@ When enabled, a `telex` tool lets the agent inspect Telex, manage channels, and 
 | `update_member_role` | channel roles, including handing the channel over with `owner` |
 | `remove_members` | take members out of a channel |
 | `get_conversation_messages` | history, chronological |
+| `get_message` | one message by id |
 | `send_message` | post into any conversation |
 | `answer_interaction` | answer or skip a question put to the bot |
 
@@ -194,6 +197,7 @@ delivers automatically. To post into *another* conversation:
 telex(action="send_message", conversation_id="<16-hex id>", text="...")
 telex(action="send_message", peer_id="<identity id>", text="...")   # or email="a@b.com"
 telex(action="send_message", conversation_id="...", media_paths=["/abs/path.png"])
+telex(action="send_message", conversation_id="...", quote_id="<message id>", text="...")
 ```
 
 Mention someone with the inline token `[@](mention:<identity_id>)` (or
