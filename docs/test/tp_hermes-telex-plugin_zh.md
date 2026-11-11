@@ -49,7 +49,7 @@ E2E 直接连一个**部署在远端的真实 Voyager 实例**（Telex 内含其
 
 ```bash
 scripts/local-test.sh up            # 起 tunnel + web，等就绪，打印 URL 与 env
-scripts/local-test.sh create-bot --token <voyager_session JWT>    # 在该实例上建自定义 bot，取一次性 key
+scripts/local-test.sh create-bot --token <voyager_session JWT>    # 在该实例上建 bot，取一次性 key
 scripts/local-test.sh env           # 打印 hermes-telex 的 env 块
 scripts/local-test.sh down          # 停 web + tunnel
 scripts/local-test.sh status|logs   # 巡检 / 看日志
@@ -272,7 +272,7 @@ tests/
 
 覆盖 WBS：W-12，结果落 `docs/test/tr_hermes-telex-plugin_*_zh.md`。
 环境按 §2.1 用 `scripts/local-test.sh up` 起（tunnel 到远端 Voyager 实例）；hermes gateway 配
-`TELEX_BASE_URL=http://127.0.0.1:8000`。收尾务必 `scripts/local-test.sh down`，并按需在 Settings -> Telex Bots 里删除测试 bot（或 `POST /voyager/v1/telex/delete-bot`，删除即退役）。
+`TELEX_BASE_URL=http://127.0.0.1:8000`。收尾务必 `scripts/local-test.sh down`，并按需在 Settings -> Bots 里删除测试 bot（或 `POST /voyager/v1/identity/delete-bot`，删除即退役）。
 
 | 场景 | 验收 |
 | --- | --- |
@@ -286,7 +286,7 @@ tests/
 | E-07 pairing | dm_policy=pairing：未批准用户 DM 收到配对码/提示；批准后可正常对话 |
 | E-08 多账号 | 两 bot 各自私聊/频道独立工作 |
 | E-09 流式（可选，超出对标） | Telex UI 出现增量打字效果，终稿单条且内容完整 |
-| E-10 key 轮换 | `TelexRotateBotKey` 后旧 key 失效、新 key 生效（更新配置 + 重启） |
+| E-10 key 轮换 | `IdentityRotateBotKey` 后旧 key 失效、新 key 生效（更新配置 + 重启） |
 
 ## 6. 测试数据与 mock 约定
 

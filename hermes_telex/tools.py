@@ -22,6 +22,7 @@ from .types import (
     CONVERSATION_KIND_LABELS,
     ConversationKind,
     IDENTITY_KIND_LABELS,
+    IDENTITY_STATUS_LABELS,
     MEMBER_ROLE_BY_NAME,
     MEMBER_ROLE_LABELS,
     MESSAGE_STATUS_LABELS,
@@ -63,7 +64,7 @@ TELEX_TOOL_SCHEMA: dict[str, Any] = {
             "ids": {"type": "array", "items": {"type": "string"}, "description": "get_identities: identity ids"},
             "emails": {"type": "array", "items": {"type": "string"}, "description": "get_identities/create_channel/add_members/remove_members: emails"},
             "display_name": {"type": "string", "description": "update_identity: the bot's new display name (1-100)"},
-            "description": {"type": "string", "description": "update_identity: the bot's new description (up to 200)"},
+            "description": {"type": "string", "description": "update_identity: the bot's new description (up to 1000)"},
             "kind": {"type": "integer", "description": "list_conversations: 0 chat, 1 channel"},
             "offset": {"type": "integer"},
             "limit": {"type": "integer", "description": "page size (1-100)"},
@@ -144,6 +145,8 @@ def _identity_out(i: dict[str, Any]) -> dict[str, Any]:
         "display_name": i.get("display_name"),
         "description": i.get("description"),
         "email": i.get("email"),
+        "owner_id": i.get("owner_id"),
+        "status": IDENTITY_STATUS_LABELS.get(i.get("status"), i.get("status")),
         "online": i.get("online"),
         "mention": _mention_token(i.get("id", "")),
     }
@@ -184,11 +187,14 @@ def _conversation_out(c: dict[str, Any]) -> dict[str, Any]:
 
 
 def _member_out(m: dict[str, Any], idmap: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    identity = idmap.get(m.get("identity_id"), {})
     return {
         "identity_id": m.get("identity_id"),
         "role": MEMBER_ROLE_LABELS.get(m.get("role"), m.get("role")),
-        "display_name": idmap.get(m.get("identity_id"), {}).get("display_name"),
-        "email": idmap.get(m.get("identity_id"), {}).get("email"),
+        "kind": IDENTITY_KIND_LABELS.get(identity.get("kind"), identity.get("kind")),
+        "display_name": identity.get("display_name"),
+        "email": identity.get("email"),
+        "status": IDENTITY_STATUS_LABELS.get(identity.get("status"), identity.get("status")),
         "mention": _mention_token(m.get("identity_id", "")),
     }
 

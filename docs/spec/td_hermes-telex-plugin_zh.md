@@ -11,7 +11,7 @@
   - hermes-agent 网关鉴权/配对 (/Users/yuy/Work/project/ai-study/ref/hermes-agent/gateway/authz_mixin.py)
   - hermes-agent IRC plugin（现代 Plugin Path 范本）(.../plugins/platforms/irc/adapter.py)
   - hermes-agent base adapter / registry / stream_consumer / session
-  - Voyager Telex Bot 注册与 Key 颁发 (.../voyager/server/internal/domain/telex_identity.go)
+  - Voyager Bot 创建与 Key 颁发 (.../voyager/server/internal/domain/telex_identity.go)
   - hermes-seatalk Plugin 技术设计（架构参照）(../../../hermes-seatalk/docs/spec/td_hermes-seatalk-plugin_zh.md)
 文档摘要: >
   定义以 hermes-agent 外部 platform plugin 形式接入 Voyager Telex 的技术方案。
@@ -43,7 +43,7 @@
 |---|---|
 | hermes-agent 源码 | ✅ `/Users/yuy/Work/project/ai-study/ref/hermes-agent`，接口按真实源码核对 |
 | openclaw-telex 源码 | ✅ `openclaw/openclaw-telex`（与 hermes-telex 同级），功能对标基准 |
-| Telex Bot 注册 / Key 颁发 | ✅ voyager 代码已查清（§2） |
+| Bot 创建 / Key 颁发 | ✅ voyager 代码已查清（§2） |
 | 网关配对（pairing） | ✅ hermes-agent 内建：`pairing_store.is_approved()` + `_adapter_dm_policy()` + 配对握手（§6.3） |
 | 网关流式发送 | ✅ 支持，但 openclaw-telex 不用流式（COMPLETED 一次性），故**对标基线为一次性**；流式列为可选增强 |
 
@@ -80,22 +80,22 @@ Telex 特性沿用 §0 协议基准：单一 subscribe 入站、单一 X-API-Key
 
 ---
 
-## 2. Voyager Telex Bot 注册与 Key 颁发
+## 2. Voyager Bot 创建与 Key 颁发
 
-外部插件以一个 **Telex BOT identity** 接入；`X-API-Key` 即 bot 的 OpenAPI key。
+外部插件以一个 **Bot identity** 接入；`X-API-Key` 即 bot 的 OpenAPI key。
 
-- identity kind：USER(0)/MATE_INSTANCE(1)/**BOT(2)**；BOT 由某 user 拥有（`OwnerUserId`）。
+- identity kind：USER(0)/AGENT(1)/**BOT(2)**；BOT 由某 user 拥有（`OwnerUserId`）。
 - key 存于 `open_api_key_tab`，`SubjectKind=TELEX_BOT`、`Scopes="telex"`，**只存 SHA3-256 哈希**，明文仅颁发时返回一次。
 - 鉴权：`x-api-key` → 哈希查（60s 缓存，仅 ACTIVE）→ 解析为 bot identity，权限按 bot `OwnerUserId`。
 
 | 操作 | RPC | HTTP |
 |---|---|---|
-| 建 bot（同时颁发首个 key） | `TelexCreateBot` | `POST /voyager/v1/telex/create-bot` |
-| 轮换 key | `TelexRotateBotKey` | `POST /voyager/v1/telex/rotate-bot-key` |
-| 列出 bot | `TelexListBots` | `POST /voyager/v1/telex/list-bots` |
-| 删除 bot | `TelexDeleteBot` | `POST /voyager/v1/telex/delete-bot` |
+| 建 bot（同时颁发首个 key） | `IdentityCreateBot` | `POST /voyager/v1/identity/create-bot` |
+| 轮换 key | `IdentityRotateBotKey` | `POST /voyager/v1/identity/rotate-bot-key` |
+| 列出 bot | `IdentityListBots` | `GET /voyager/v1/identity/list-bots` |
+| 删除 bot | `IdentityDeleteBot` | `POST /voyager/v1/identity/delete-bot` |
 
-运维：以 bot 归属 user 身份调 `create-bot`（web SDK `telexService.createBot` / 带 session 的 HTTP）→ 保存一次性 `plaintext_key`（→ `api_key`）与 `bot.id`（→ `bot_id`，硬化自发消息抑制）。丢失只能轮换。
+运维：以 bot 归属 user 身份调 `create-bot`（web SDK `identityService.createBot` / 带 session 的 HTTP）→ 保存一次性 `plaintext_key`（→ `api_key`）与 `bot.id`（→ `bot_id`，硬化自发消息抑制）。丢失只能轮换。
 
 ---
 
