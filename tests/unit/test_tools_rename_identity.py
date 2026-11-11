@@ -8,6 +8,7 @@ import json
 import pytest
 
 from hermes_telex import accounts, tools
+from hermes_telex.types import IDENTITY_PREFIX
 from tests.conftest import StubClient
 
 
@@ -51,20 +52,20 @@ async def test_conversation_info_exposes_is_default(wired):
 
 async def test_update_identity_sends_only_the_provided_fields(wired):
     client, _ = wired
-    await _call(action="update_identity", display_name="Bot One")
-    assert client.posts[-1] == ("/update-identity", {"display_name": "Bot One"})
+    await _call(action="update_identity", name="Bot One")
+    assert client.posts[-1] == (f"{IDENTITY_PREFIX}/update", {"name": "Bot One"})
 
     await _call(action="update_identity", description="does things")
-    assert client.posts[-1] == ("/update-identity", {"description": "does things"})
+    assert client.posts[-1] == (f"{IDENTITY_PREFIX}/update", {"description": "does things"})
 
-    await _call(action="update_identity", display_name="Bot One", description="")
-    assert client.posts[-1] == ("/update-identity", {"display_name": "Bot One", "description": ""})
+    await _call(action="update_identity", name="Bot One", description="")
+    assert client.posts[-1] == (f"{IDENTITY_PREFIX}/update", {"name": "Bot One", "description": ""})
 
 
 async def test_update_identity_requires_one_field(wired):
     client, _ = wired
     out = await _call(action="update_identity")
-    assert "display_name and/or description" in out["error"]
+    assert "name and/or description" in out["error"]
     assert client.posts == []
 
 
@@ -72,7 +73,7 @@ async def test_update_identity_requires_one_field(wired):
     "action,args",
     [
         ("rename_conversation", {"conversation_id": "c1", "title": "t"}),
-        ("update_identity", {"display_name": "n"}),
+        ("update_identity", {"name": "n"}),
     ],
 )
 async def test_actions_disabled_per_account(monkeypatch, action, args):

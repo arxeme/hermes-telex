@@ -70,7 +70,7 @@ def _strip_leading_self_mention(text: str, self_id: str | None) -> str:
 
 
 def _speaker(identity: dict[str, Any], sender_id: str) -> str:
-    who = identity.get("display_name") or "user"
+    who = identity.get("name") or "user"
     return f"{who} (id {sender_id})" if sender_id else who
 
 
@@ -187,7 +187,7 @@ class TelexDispatcher:
         # attempt (poison-counted and retried by repair).
         conversation, is_channel, sender = await self._conversation_and_sender(conv, sender_id)
         sender_email = sender.get("email") or None
-        sender_name = sender.get("display_name") or None
+        sender_name = sender.get("name") or None
         # Preserve identity_id in agent-visible context for mention tokens.
         if sender_name and sender_id:
             sender_name = f"{sender_name} (id {sender_id})"

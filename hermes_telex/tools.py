@@ -18,13 +18,16 @@ from .client import TelexError, get_telex_client
 from .send import send_telex_message
 from .log import get_logger
 from .types import (
+    AGENT_KIND_LABELS,
     CHANNEL_PERMISSIONS,
     CONVERSATION_KIND_LABELS,
     ConversationKind,
     IDENTITY_KIND_LABELS,
+    IDENTITY_STATUS_LABELS,
     MEMBER_ROLE_BY_NAME,
     MEMBER_ROLE_LABELS,
     MESSAGE_STATUS_LABELS,
+    identity_flag_labels,
     message_flag_labels,
 )
 
@@ -62,8 +65,8 @@ TELEX_TOOL_SCHEMA: dict[str, Any] = {
             "query": {"type": "string", "description": "search_identities: name/email text"},
             "ids": {"type": "array", "items": {"type": "string"}, "description": "get_identities: identity ids"},
             "emails": {"type": "array", "items": {"type": "string"}, "description": "get_identities/create_channel/add_members/remove_members: emails"},
-            "display_name": {"type": "string", "description": "update_identity: the bot's new display name (1-100)"},
-            "description": {"type": "string", "description": "update_identity: the bot's new description (up to 200)"},
+            "name": {"type": "string", "description": "update_identity: the bot's new name (1-100)"},
+            "description": {"type": "string", "description": "update_identity: the bot's new description (up to 1000)"},
             "kind": {"type": "integer", "description": "list_conversations: 0 chat, 1 channel"},
             "offset": {"type": "integer"},
             "limit": {"type": "integer", "description": "page size (1-100)"},
@@ -137,13 +140,23 @@ def _mention_token(identity_id: str) -> str:
     return f"[@](mention:{identity_id})"
 
 
+def _identity_labels(i: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "kind": IDENTITY_KIND_LABELS.get(i.get("kind"), i.get("kind")),
+        **({"agent_kind": AGENT_KIND_LABELS.get(i["agent_kind"], i["agent_kind"])} if i.get("agent_kind") else {}),
+        "status": IDENTITY_STATUS_LABELS.get(i.get("status"), i.get("status")),
+        "flags": identity_flag_labels(i.get("flags") or 0),
+    }
+
+
 def _identity_out(i: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": i.get("id"),
-        "kind": IDENTITY_KIND_LABELS.get(i.get("kind"), i.get("kind")),
-        "display_name": i.get("display_name"),
+        **_identity_labels(i),
+        "name": i.get("name"),
         "description": i.get("description"),
         "email": i.get("email"),
+        "owner_id": i.get("owner_id"),
         "online": i.get("online"),
         "mention": _mention_token(i.get("id", "")),
     }
@@ -184,11 +197,13 @@ def _conversation_out(c: dict[str, Any]) -> dict[str, Any]:
 
 
 def _member_out(m: dict[str, Any], idmap: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    identity = idmap.get(m.get("identity_id"), {})
     return {
         "identity_id": m.get("identity_id"),
         "role": MEMBER_ROLE_LABELS.get(m.get("role"), m.get("role")),
-        "display_name": idmap.get(m.get("identity_id"), {}).get("display_name"),
-        "email": idmap.get(m.get("identity_id"), {}).get("email"),
+        **_identity_labels(identity),
+        "name": identity.get("name"),
+        "email": identity.get("email"),
         "mention": _mention_token(m.get("identity_id", "")),
     }
 
@@ -228,7 +243,7 @@ async def _messages_out(client, conversation_id: str, messages: list[dict[str, A
     return out
 
 
-# batch-get-identities silently skips unknown emails, so completeness is checked
+# identity/batch-get silently skips unknown emails, so completeness is checked
 # here: any unresolved email aborts before the mutation.
 async def _resolve_member_ids(client, identity_ids, emails) -> tuple[list[str], str | None]:
     ids = list(dict.fromkeys(identity_ids or []))
@@ -305,12 +320,12 @@ async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
             res = await client.get_identities(args.get("ids") or [], args.get("emails") or [])
             return json.dumps({"identities": [_identity_out(i) for i in res]})
         if action == "update_identity":
-            display_name = args.get("display_name")
+            name = args.get("name")
             description = args.get("description")
             # An empty description clears it, so absence is the only no-op.
-            if not display_name and description is None:
-                return json.dumps({"error": "provide display_name and/or description"})
-            identity = await client.update_identity(display_name, description)
+            if not name and description is None:
+                return json.dumps({"error": "provide name and/or description"})
+            identity = await client.update_identity(name, description)
             return json.dumps({"identity": _identity_out(identity)})
         if action == "list_conversations":
             res = await client.list_conversations(

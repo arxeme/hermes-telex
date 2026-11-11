@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from hermes_telex.client import TelexClient
+from hermes_telex.types import IDENTITY_PREFIX
 
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
@@ -73,6 +74,9 @@ class StubClient(TelexClient):
         if path.endswith("/mark-read"):
             return {"read_seq": body.get("read_seq")}
         return self.post_replies.get(path, {})
+
+    async def _identity_post(self, path: str, body: dict):
+        return await self._post(f"{IDENTITY_PREFIX}{path}", body)
 
     async def get_conversation(self, conversation_id: str, force_refresh: bool = False) -> dict:
         return self.conversations.get(conversation_id, {"id": conversation_id, "kind": 0})

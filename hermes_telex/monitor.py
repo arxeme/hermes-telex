@@ -344,13 +344,13 @@ async def run_monitor(
                 # membership rows before any dispatch.
                 if auth_error(exc):
                     logger.error(
-                        "[%s] get-identity rejected: check key scopes; "
+                        "[%s] identity/get rejected: check key scopes; "
                         "identity will be armed from membership rows: %s",
                         account_id, exc,
                     )
                 else:
                     logger.warning(
-                        "[%s] get-identity failed; identity will be armed from membership rows: %s",
+                        "[%s] identity/get failed; identity will be armed from membership rows: %s",
                         account_id, exc,
                     )
             activity = asyncio.Event()

@@ -2,7 +2,7 @@
 
 Voyager **Telex** messaging platform plugin for Hermes Agent. It lets a Hermes
 agent receive and reply to Telex direct chats and channels through the Telex
-OpenAPI, using a Telex **bot** API key. Feature parity with
+OpenAPI, using a **bot** API key. Feature parity with
 [openclaw-telex](../openclaw-telex).
 
 The platform id inside Hermes is `telex`.
@@ -56,8 +56,8 @@ Hermes refuses to load the plugin below the version in `plugin.yaml`'s
 
 ## Get a bot API key
 
-1. In Voyager, sign in as the owner account and add a bot under Settings -> Telex Bots -> **Custom Bots**
-   (`POST /voyager/v1/telex/create-bot`, web SDK `telexService.createBot`; see [docs/spec TD §2](docs/spec/td_hermes-telex-plugin_zh.md)).
+1. In Voyager, sign in as the owner account and create a bot under Settings -> Bots
+   (`POST /voyager/v1/identity/create-bot`, web SDK `identityService.createBot`; see [docs/spec TD §2](docs/spec/td_hermes-telex-plugin_zh.md)).
 2. Copy the one-time **plaintext API key** (shown only once) and the returned `bot.id`.
 3. The base URL is your Voyager host (default `https://voyager.ingarena.net`).
 
@@ -76,7 +76,7 @@ platforms:
     extra:
       api_key: "<plaintext bot api key>"
       base_url: "https://voyager.ingarena.net"
-      bot_id: "0a1b2c3d4e5f6071"        # optional override; identity is resolved via get-identity at connect
+      bot_id: "0a1b2c3d4e5f6071"        # optional override; identity is resolved via identity/get at connect
       dm_policy: allowlist               # open | allowlist | pairing
       allow_from: ["alice@company.com", "0a1b2c3d4e5f6071"]
       group_policy: disabled             # disabled | allowlist | open
@@ -161,7 +161,7 @@ hook; YAML is the full-featured (multi-account) config.
 - **Quotes**: when a message quotes another, the agent sees the quoted message, media included. The agent's replies never quote; it quotes only through the `telex` tool's `send_message` `quote_id`.
 - **Self-echo suppression**: the subscribe stream fans the bot's own messages back
   to it, so the plugin drops messages from its own identity (resolved via
-  `get-identity` at connect; `bot_id` overrides, and send responses confirm it).
+  `identity/get` at connect; `bot_id` overrides, and send responses confirm it).
 
 ## Agent tool
 
@@ -170,7 +170,7 @@ When enabled, a `telex` tool lets the agent inspect Telex, manage channels, and 
 | Action | Purpose |
 | --- | --- |
 | `search_identities` / `get_identities` | find or resolve users and bots |
-| `update_identity` | edit the bot's own display name and/or description |
+| `update_identity` | edit the bot's own name and/or description |
 | `list_conversations` / `get_conversation_info` | chats and channels |
 | `create_channel` | create a channel (a 1:1 needs no creation — `send_message` with `peer_id`/`email` opens the default chat itself) |
 | `rename_conversation` | retitle a channel or a non-default chat |

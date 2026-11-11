@@ -13,7 +13,7 @@ def _setup(extra_overrides=None, *, channel=False):
     extra.update(extra_overrides or {})
     account = accounts.resolve_account(extra, "default")
     client = StubClient(bot_id="bot1")
-    client.identities["u1"] = {"id": "u1", "email": "a@b.com", "display_name": "Alice"}
+    client.identities["u1"] = {"id": "u1", "email": "a@b.com", "name": "Alice"}
     client.conversations["c1"] = {"id": "c1", "kind": 1 if channel else 0, "title": "Room"}
     adapter = FakeAdapter()
     disp = TelexDispatcher(adapter, account, client)
@@ -196,7 +196,7 @@ async def test_inbound_media_downloaded():
 ])
 async def test_quote_fills_reply_fields(sender, own, text):
     disp, adapter, client = _setup({"dm_policy": "open", "allow_from": ["*"]})
-    client.identities["u2"] = {"id": "u2", "display_name": "Bob"}
+    client.identities["u2"] = {"id": "u2", "name": "Bob"}
     client.post_replies["/batch-get-messages"] = {"messages": [_msg(sender=sender, text="earlier words", mid="q1")]}
 
     await disp.handle(dict(_msg(seq=2, text="what about this?"), quote_id="q1"))

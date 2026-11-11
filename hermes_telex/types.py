@@ -1,4 +1,4 @@
-"""Telex wire-protocol enums and constants (mirror voyager telex.proto).
+"""Telex wire-protocol enums and constants (mirror the voyager Open API).
 
 Telex JSON emits enums as integers and snake_case field names; messages are
 passed around as plain dicts (like openclaw-telex's TS interfaces), accessed
@@ -7,7 +7,8 @@ with these constants.
 
 from __future__ import annotations
 
-OPENAPI_PREFIX = "/voyager/v1/openapi/telex"
+TELEX_PREFIX = "/voyager/v1/openapi/telex"
+IDENTITY_PREFIX = "/voyager/v1/openapi/identity"
 DEFAULT_BASE_URL = "https://voyager.ingarena.net"
 
 
@@ -50,8 +51,12 @@ class MessageFlag:
 
 class IdentityKind:
     USER = 0
-    MATE_INSTANCE = 1
+    AGENT = 1
     BOT = 2
+
+
+class IdentityFlag:
+    TELEX_DISABLED = 1
 
 
 class ToolStatus:
@@ -93,7 +98,9 @@ MESSAGE_STATUS_LABELS = {0: "completed", 1: "in_progress", 2: "error", 3: "abort
 CONVERSATION_KIND_LABELS = {0: "chat", 1: "channel"}
 MEMBER_ROLE_LABELS = {0: "member", 1: "admin", 2: "owner"}
 MEMBER_ROLE_BY_NAME = {name: value for value, name in MEMBER_ROLE_LABELS.items()}
-IDENTITY_KIND_LABELS = {0: "user", 1: "mate_instance", 2: "bot"}
+IDENTITY_KIND_LABELS = {0: "user", 1: "agent", 2: "bot"}
+IDENTITY_STATUS_LABELS = {0: "active", 1: "retired"}
+AGENT_KIND_LABELS = {1: "mate", 2: "nemo"}
 TOOL_STATUS_LABELS = {0: "in_progress", 1: "success", 2: "error", 3: "aborted"}
 INTERACTION_STATUS_LABELS = {0: "open", 1: "answered", 2: "skipped", 3: "expired", 4: "closed"}
 
@@ -118,3 +125,8 @@ def message_flag_labels(flags: int) -> list[str]:
     if flags & MessageFlag.FORK_PREFIX:
         out.append("fork_prefix")
     return out
+
+
+def identity_flag_labels(flags: int) -> list[str]:
+    """Expand an identity flags bitmask into a label list."""
+    return ["telex_disabled"] if flags & IdentityFlag.TELEX_DISABLED else []

@@ -11,7 +11,7 @@
   - hermes-agent 网关鉴权/配对 (/Users/yuy/Work/project/ai-study/ref/hermes-agent/gateway/authz_mixin.py)
   - hermes-agent IRC plugin（现代 Plugin Path 范本）(.../plugins/platforms/irc/adapter.py)
   - hermes-agent base adapter / registry / stream_consumer / session
-  - Voyager Telex Bot 注册与 Key 颁发 (.../voyager/server/internal/domain/telex_identity.go)
+  - Voyager Bot 创建与 Key 颁发 (.../voyager/server/internal/voyager/domain/identity.go)
   - hermes-seatalk Plugin 技术设计（架构参照）(../../../hermes-seatalk/docs/spec/td_hermes-seatalk-plugin_zh.md)
 文档摘要: >
   定义以 hermes-agent 外部 platform plugin 形式接入 Voyager Telex 的技术方案。
@@ -43,7 +43,7 @@
 |---|---|
 | hermes-agent 源码 | ✅ `/Users/yuy/Work/project/ai-study/ref/hermes-agent`，接口按真实源码核对 |
 | openclaw-telex 源码 | ✅ `openclaw/openclaw-telex`（与 hermes-telex 同级），功能对标基准 |
-| Telex Bot 注册 / Key 颁发 | ✅ voyager 代码已查清（§2） |
+| Bot 创建 / Key 颁发 | ✅ voyager 代码已查清（§2） |
 | 网关配对（pairing） | ✅ hermes-agent 内建：`pairing_store.is_approved()` + `_adapter_dm_policy()` + 配对握手（§6.3） |
 | 网关流式发送 | ✅ 支持，但 openclaw-telex 不用流式（COMPLETED 一次性），故**对标基线为一次性**；流式列为可选增强 |
 
@@ -80,22 +80,22 @@ Telex 特性沿用 §0 协议基准：单一 subscribe 入站、单一 X-API-Key
 
 ---
 
-## 2. Voyager Telex Bot 注册与 Key 颁发
+## 2. Voyager Bot 创建与 Key 颁发
 
-外部插件以一个 **Telex BOT identity** 接入；`X-API-Key` 即 bot 的 OpenAPI key。
+外部插件以一个 **Bot identity** 接入；`X-API-Key` 即 bot 的 OpenAPI key。
 
-- identity kind：USER(0)/MATE_INSTANCE(1)/**BOT(2)**；BOT 由某 user 拥有（`OwnerUserId`）。
-- key 存于 `open_api_key_tab`，`SubjectKind=TELEX_BOT`、`Scopes="telex"`，**只存 SHA3-256 哈希**，明文仅颁发时返回一次。
-- 鉴权：`x-api-key` → 哈希查（60s 缓存，仅 ACTIVE）→ 解析为 bot identity，权限按 bot `OwnerUserId`。
+- identity kind：USER(0)/AGENT(1)/**BOT(2)**；BOT 由某 user 拥有（`owner_id`）。
+- key 存于 `open_api_key_tab`，`SubjectKind=BOT`、`Scopes="telex:* identity:*"`，**只存 SHA3-256 哈希**，明文仅颁发时返回一次。
+- 鉴权：`x-api-key` → 哈希查（60s 缓存，仅 ACTIVE）→ 解析为 bot identity，权限按 bot `owner_id`。
 
 | 操作 | RPC | HTTP |
 |---|---|---|
-| 建 bot（同时颁发首个 key） | `TelexCreateBot` | `POST /voyager/v1/telex/create-bot` |
-| 轮换 key | `TelexRotateBotKey` | `POST /voyager/v1/telex/rotate-bot-key` |
-| 列出 bot | `TelexListBots` | `POST /voyager/v1/telex/list-bots` |
-| 删除 bot | `TelexDeleteBot` | `POST /voyager/v1/telex/delete-bot` |
+| 建 bot（同时颁发首个 key） | `IdentityCreateBot` | `POST /voyager/v1/identity/create-bot` |
+| 轮换 key | `IdentityRotateBotKey` | `POST /voyager/v1/identity/rotate-bot-key` |
+| 列出 bot | `IdentityListBots` | `GET /voyager/v1/identity/list-bots` |
+| 删除 bot | `IdentityDeleteBot` | `POST /voyager/v1/identity/delete-bot` |
 
-运维：以 bot 归属 user 身份调 `create-bot`（web SDK `telexService.createBot` / 带 session 的 HTTP）→ 保存一次性 `plaintext_key`（→ `api_key`）与 `bot.id`（→ `bot_id`，硬化自发消息抑制）。丢失只能轮换。
+运维：以 bot 归属 user 身份调 `create-bot`（web SDK `identityService.createBot` / 带 session 的 HTTP）→ 保存一次性 `plaintext_key`（→ `api_key`）与 `bot.id`（→ `bot_id`，硬化自发消息抑制）。丢失只能轮换。
 
 ---
 
@@ -271,7 +271,7 @@ hermes-agent 内建（`gateway/authz_mixin.py`）：pairing 模式下 DM 到达�
 | `send_typing()` | set-activity `processing`；`processing_indicator=activity` 时每 3s 保活（openclaw TYPING_KEEPALIVE_MS） |
 | `send_image/send_image_file/send_document` | upload-file → media block |
 | `get_chat_info()` | get-conversation → `{name,type,chat_id}` |
-| `_resolve_target()` | `<conversation_id>`→conversation_id；`peer/<id>`→peer_id；`email/<x>`→batch-get-identities→peer_id（失败返回可读 error，负向缓存 10min） |
+| `_resolve_target()` | `<conversation_id>`→conversation_id；`peer/<id>`→peer_id；`email/<x>`→identity/batch-get→peer_id（失败返回可读 error，负向缓存 10min） |
 
 自发消息抑制（复刻 client.ts）：`self_id` 学习自每次 send 响应的 `sender_id` + 配置 `bot_id`（首帧即生效）+ 已发 message id LRU（2000）；`is_own_message(msg)=self_id 命中 或 id∈已发`。
 
@@ -299,7 +299,7 @@ readiness 帧后先 seed 每会话 backfill（`list-messages` 分页 100/页、�
 5. **内容抽取**：拼 TEXT block；IMAGE/VIDEO/AUDIO/FILE 经 media.py 下载落 cache→`media_urls/media_types`（占位符 `[image: name]` 等）；THINKING/TOOL 入站忽略。
 6. **fork**：`fork_of_conversation_id` 存在→继承父会话 session（parentSessionKey）；首轮拉 fork 前历史（limit 50，FORK_PREFIX，COMPLETED，按 seq）作上下文。
 7. **mention 回填**：require_mention channel 且距上轮有 gap→拉漏掉的消息（limit 50）作 thread 上下文。
-8. **身份解析**：`sender_id`→batch-get-identities→email/display_name（缓存），设 `user_id`(email 优先)/`user_id_alt`(id)/`user_name`。
+8. **身份解析**：`sender_id`→identity/batch-get→email/name（缓存），设 `user_id`(email 优先)/`user_id_alt`(id)/`user_name`。
 9. **per-conversation 串行**：同 `account:conversation` 排队，一次一轮 agent；不同会话并发。
 
 `SessionSource`：`chat_type=dm|group`、`chat_id=conversation_id`、`thread_id=None`。
@@ -342,7 +342,7 @@ dedup（LRU max 1000/2000，TTL 30min）、self 已发 id LRU(2000)、identity �
 - 默认 deny：dm_policy 默认 allowlist、group_policy 默认 disabled、channel 默认 require_mention。`dm_policy=open` 记安全告警（openclaw 同）。
 - subscribe 含自发消息——务必自发抑制，防自激。
 - 日志子系统：subscribe/inbound/backfill/outbound/media/access/pairing；字段 account/conversation/message/seq/sender/reason；**不记 key 与正文明文**。
-- `hermes gateway status`：静态 `is_connected`；运行时 health（stream connected、base_url、账号数、last error、自身 display_name）。
+- `hermes gateway status`：静态 `is_connected`；运行时 health（stream connected、base_url、账号数、last error、自身 name）。
 
 ---
 
@@ -422,4 +422,4 @@ openclaw-telex 不使用流式（COMPLETED 一次性），故**对标基线为�
 | `hermes-agent/plugins/platforms/irc/adapter.py` | 零-patch register(ctx) 范本 |
 | `hermes-agent/gateway/platforms/base.py` | BasePlatformAdapter/SendResult/MessageEvent/build_source/cache_* |
 | `hermes-agent/gateway/platform_registry.py` | PlatformEntry（apply_yaml_config_fn/env_enablement_fn/cron_deliver_env_var/standalone_sender_fn） |
-| `voyager/server/internal/domain/telex_identity.go` | bot 注册/轮换/key 颁发 |
+| `voyager/server/internal/voyager/domain/identity.go` | bot 创建/轮换/key 颁发 |

@@ -20,11 +20,11 @@ hermes-agent **运行在远端**——即 Voyager 测试后端所在的机器上
 [本机: 测试者客户端]                         [远端: Voyager 测试服 + hermes-agent VM]
  local-test.sh up                             voyager API :8000
    ├─ chisel tunnel  ──────────────────────►  (被 tunnel 到本机 127.0.0.1:8000)
-   └─ make web dev  (localhost:3000) ───────►  用真实账号登录、注册 bot、与 bot 对话
+   └─ make web dev  (localhost:3000) ───────►  用真实账号登录、创建 bot、与 bot 对话
  deploy/deploy-telex-plugin.sh  ───SMC/incus──►  hermes-agent VM: 装 telex 插件 + 起 gateway
 ```
 
-- **本机侧**：`local-test.sh` 提供浏览器可用的 Telex Web（经 tunnel 打到远端 voyager），用于**登录、注册 bot、发消息验证**。
+- **本机侧**：`local-test.sh` 提供浏览器可用的 Telex Web（经 tunnel 打到远端 voyager），用于**登录、创建 bot、发消息验证**。
 - **远端侧**：hermes-telex 插件 + hermes-agent 实例跑在 VM 里；插件的 `TELEX_BASE_URL` 用 **VM 内可达的 voyager 地址**（Incus host 网关或内网 `voyager.ingarena.net`），**不是** tunnel 地址。
 
 关键路径：
@@ -43,7 +43,7 @@ hermes-agent **运行在远端**——即 Voyager 测试后端所在的机器上
 | Voyager `web/node_modules` | ✅ 已装 |
 | SMC 访问测试服 | 需 `smc` 配好 profile（`deploy/env.local`），能 `smc toc <server>` |
 | 远端 hermes-agent 实例 | ⏳ 你稍后在 VM 内新建/起好（含 LLM provider key，agent 才能回复） |
-| Telex bot key | 步骤 2 现场颁发 |
+| Bot key | 步骤 2 现场颁发 |
 
 > 本机 `ref/hermes-agent`（那份损坏的 `.venv`）仅用于**读源码**，不参与运行。
 
@@ -55,11 +55,11 @@ scripts/local-test.sh up          # chisel tunnel(127.0.0.1:8000) + web(:3000)
 scripts/local-test.sh status
 ```
 
-## 2. 注册 Telex bot（取一次性 key）
+## 2. 创建 bot（取一次性 key）
 
 1. 浏览器开 `http://localhost:3000`，用**真实账号**登录。
 2. 取 session JWT：DevTools → Application → Local Storage → `voyager_session`。
-3. 建自定义 bot（保存 `plaintext_key` 与 `bot.id`，key 仅此一次）：
+3. 建 bot（保存 `plaintext_key` 与 `bot.id`，key 仅此一次）：
 
 ```bash
 scripts/local-test.sh create-bot --token '<voyager_session JWT>' --name hermes-telex-e2e
@@ -126,7 +126,7 @@ deploy/deploy-telex-plugin.sh
 ```bash
 deploy/cleanup-telex-plugin.sh     # 远端：禁用+移除插件，重启 gateway
 scripts/local-test.sh down         # 本机：停 tunnel + web
-# 可选：Settings -> Telex Bots 里删除测试 bot（POST /voyager/v1/telex/delete-bot），删除即退役
+# 可选：Settings -> Bots 里删除测试 bot（POST /voyager/v1/identity/delete-bot），删除即退役
 ```
 
 ## 故障排查
