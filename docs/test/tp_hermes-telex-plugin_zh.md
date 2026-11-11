@@ -49,7 +49,7 @@ E2E 直接连一个**部署在远端的真实 Voyager 实例**（Telex 内含其
 
 ```bash
 scripts/local-test.sh up            # 起 tunnel + web，等就绪，打印 URL 与 env
-scripts/local-test.sh create-bot --token <voyager_session JWT>    # 在该实例上建自定义 bot，取一次性 key
+scripts/local-test.sh create-bot --token <voyager_session JWT>    # 在该实例上建 bot，取一次性 key
 scripts/local-test.sh env           # 打印 hermes-telex 的 env 块
 scripts/local-test.sh down          # 停 web + tunnel
 scripts/local-test.sh status|logs   # 巡检 / 看日志
@@ -121,7 +121,7 @@ tests/
 | T-02-01 鉴权头 | 每个请求带 `X-API-Key`；base URL 可配 |
 | T-02-02 send_message 单目标 | 恰好传一个 conversation_id/peer_id/message_id；多目标或零目标报错 |
 | T-02-03 list/get conversation | 解析 conversation 字段（kind/title/last_seq 等）正确 |
-| T-02-04 batch-get-identities | 按 ids/emails 解析 identity；未知项跳过 |
+| T-02-04 identity/batch-get | 按 ids/emails 解析 identity；未知项跳过 |
 | T-02-05 upload-file | multipart 字段名 `file`，>20 MiB 触发 `file_required_or_too_large` |
 | T-02-06 download-file | 带 file_id/conversation_id/message_id；返回原始字节 |
 | T-02-07 错误体映射 | `{code,message}` 映射统一异常；`not_a_member`/`message_too_long` 等可分支 |
@@ -163,7 +163,7 @@ tests/
 | T-05-02 channel source | channel → `chat_type=group`；`user_id`=sender email（解析），`user_id_alt`=identity_id |
 | T-05-03 去重 | 同 `(conversation_id,seq)`/`id` 只投递一次 |
 | T-05-04 自我过滤 | `sender_id==self_id`（bot_id 或首发学习）或 id∈已发 → drop |
-| T-05-05 identity 解析缓存 | `sender_id`→email/display_name 经 batch-get-identities 解析并缓存 |
+| T-05-05 identity 解析缓存 | `sender_id`→email/name 经 identity/batch-get 解析并缓存 |
 | T-05-06 skip 标志 | IN_PROGRESS / `flags&EVENT` / `flags&FORK_PREFIX` 均不进 agent（EVENT 走系统事件同步） |
 | T-05-07 内容抽取 | 拼 TEXT block；IMAGE/FILE 下载落 cache 进 media_urls；空文本用占位符 |
 | T-05-08 per-conversation 串行 | 同 `account:conversation` 排队一次一轮；不同会话并发 |
@@ -181,7 +181,7 @@ tests/
 | T-06-01 发文本 | `send(content)` → send-message(status=0)，目标正确 |
 | T-06-02 target: conversation_id | `telex:<hex>` → `conversation_id` |
 | T-06-03 target: peer | `telex:peer/<id>` → `peer_id` |
-| T-06-04 target: email | `telex:email/<x>` → batch-get-identities → peer_id |
+| T-06-04 target: email | `telex:email/<x>` → identity/batch-get → peer_id |
 | T-06-05 email 失败 | 无活跃 identity 时返回可读 `SendResult.error`，负向缓存，不抛异常 |
 | T-06-06 分片 | 超 `TELEX_TEXT_CHUNK_LIMIT`（默认 200000）拆多条 COMPLETED |
 | T-06-07 typing 保活 | `processing_indicator=activity` 时 `send_typing`→set-activity 每 ~3s 保活；`off` 不发 |
@@ -272,7 +272,7 @@ tests/
 
 覆盖 WBS：W-12，结果落 `docs/test/tr_hermes-telex-plugin_*_zh.md`。
 环境按 §2.1 用 `scripts/local-test.sh up` 起（tunnel 到远端 Voyager 实例）；hermes gateway 配
-`TELEX_BASE_URL=http://127.0.0.1:8000`。收尾务必 `scripts/local-test.sh down`，并按需在 Settings -> Telex Bots 里删除测试 bot（或 `POST /voyager/v1/telex/delete-bot`，删除即退役）。
+`TELEX_BASE_URL=http://127.0.0.1:8000`。收尾务必 `scripts/local-test.sh down`，并按需在 Settings -> Bots 里删除测试 bot（或 `POST /voyager/v1/identity/delete-bot`，删除即退役）。
 
 | 场景 | 验收 |
 | --- | --- |
@@ -286,7 +286,7 @@ tests/
 | E-07 pairing | dm_policy=pairing：未批准用户 DM 收到配对码/提示；批准后可正常对话 |
 | E-08 多账号 | 两 bot 各自私聊/频道独立工作 |
 | E-09 流式（可选，超出对标） | Telex UI 出现增量打字效果，终稿单条且内容完整 |
-| E-10 key 轮换 | `TelexRotateBotKey` 后旧 key 失效、新 key 生效（更新配置 + 重启） |
+| E-10 key 轮换 | `IdentityRotateBotKey` 后旧 key 失效、新 key 生效（更新配置 + 重启） |
 
 ## 6. 测试数据与 mock 约定
 

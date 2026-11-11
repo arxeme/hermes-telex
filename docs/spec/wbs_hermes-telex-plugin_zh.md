@@ -21,7 +21,7 @@ hermes-agent 上以外部 platform plugin 方式提供 Voyager Telex 平台接�
   IRC 参考插件为零-patch 范本。
 - **功能对标 openclaw-telex**（`openclaw/openclaw-telex`）：需实现其全部功能（TD §12 对标清单）。
 - 入站唯一通道为 Telex `subscribe` SSE 长连接；无 webhook / relay / websocket 分支。
-- 鉴权单一 `X-API-Key`（绑定一个 Telex BOT identity）。
+- 鉴权单一 `X-API-Key`（绑定一个 Bot identity）。
 - **访问策略在插件内实现**（`enforces_own_access_policy=True`）：dm_policy(open/allowlist/pairing) +
   group_policy(disabled/allowlist/open) + sender allowlist + require_mention；**pairing 委托 hermes-agent 网关内建配对**。
 - 配置为 openclaw `channels.telex` 的 **YAML 等效**（`platforms.telex.extra`，snake_case），支持多账号 `accounts.<id>`。
@@ -43,7 +43,7 @@ hermes-agent 上以外部 platform plugin 方式提供 Voyager Telex 平台接�
 | W-07 | cron 与 out-of-process 投递 | W-01, W-06 | AFK | `cron_deliver_env_var`、`standalone_sender_fn`、home channel | `deliver="telex"` 路由 home；离线不依赖 live adapter |
 | W-08 | 原生流式（增强，超出对标） | W-06 | AFK | `supports_draft_streaming`、`send_draft` 累计全文→追加、`send()` finalize | 增量到达；终稿不重复；失败降级一次性 |
 | W-09 | telex 工具（6 只读 action，逐项开关） | W-01, W-02 | AFK | search_identities/get_identities/list_conversations/get_conversation_info/list_members/get_conversation_messages | 逐项开关；不用于发送；枚举转标签 |
-| W-10 | 配置、安装与运维文档 | W-01..W-09,W-13..W-15 | AFK | README、env.example、YAML 样例、setup wizard、status、Bot 注册/Key 运维说明 | 按文档可注册 bot、取 key、YAML 配置、验证 |
+| W-10 | 配置、安装与运维文档 | W-01..W-09,W-13..W-15 | AFK | README、env.example、YAML 样例、setup wizard、status、Bot 创建/Key 运维说明 | 按文档可创建 bot、取 key、YAML 配置、验证 |
 | W-11 | 自动化测试集 | W-01..W-09,W-13..W-15 | AFK | pytest 单测、集成、mock OpenAPI/subscribe 流 | TP §3/§4 离线可验证 |
 | W-12 | 真实 Telex 联调验证 | W-10, W-11 | HITL | `scripts/local-test.sh` + 真实 bot key、1:1/channel/pairing/媒体/回填 | 端到端；至少一条路径通过；用毕 unregister |
 | W-13 | 访问控制与配对 | W-02 | AFK | `access.py`：dm(open/allowlist/pairing)+group(disabled/allowlist/open)+sender allowlist+require_mention；`enforces_own_access_policy=True`+`_dm_policy`；pairing 委托网关 | 匹配规则(`*`/id/email)；pairing DM 转发网关；`open` 需 `*` |
@@ -148,7 +148,7 @@ IMAGE/VIDEO/AUDIO/FILE 经 `download-file` 下载并用 base 的 `cache_*_from_b
 目标：把 subscribe 消息归一为 `MessageEvent` 并调度进 gateway。
 
 交付物：`dispatcher.py` —— `(conversation_id,seq)`/`id` 去重；系统事件（`flags&1`）状态同步；
-自我过滤（`sender_id==自身`）；`sender_id`→`batch-get-identities` 解析 email/display_name（缓存）；
+自我过滤（`sender_id==自身`）；`sender_id`→`identity/batch-get` 解析 email/name（缓存）；
 会话类型判定（get-conversation 缓存）；channel 准入（`TELEX_CHANNEL_ALLOWED`）；@mention 门控
 （`TELEX_REQUIRE_MENTION`，标记 `telex_was_mentioned`）；`build_source` + `handle_message`。
 
@@ -204,12 +204,12 @@ IMAGE/VIDEO/AUDIO/FILE 经 `download-file` 下载并用 base 的 `cache_*_from_b
 
 ### W-10 配置、安装与运维文档
 
-目标：使用者可端到端完成 bot 注册、取 key、安装、配置、验证。
+目标：使用者可端到端完成 bot 创建、取 key、安装、配置、验证。
 
 交付物：README（安装/启用/配置/排查）、`env.example`、setup wizard 文案、status 展示说明；
-**Bot 注册与 Key 颁发运维说明**（`TelexRegisterBot`/`TelexRotateBotKey` 流程、明文仅一次、轮换）。
+**Bot 创建与 Key 颁发运维说明**（`IdentityCreateBot`/`IdentityRotateBotKey` 流程、明文仅一次、轮换）。
 
-完成条件：照文档可注册 bot 取得 64-hex key、`hermes plugins enable`、配置 env、重启 gateway、`hermes gateway status` 见 connected。
+完成条件：照文档可创建 bot 取得 64-hex key、`hermes plugins enable`、配置 env、重启 gateway、`hermes gateway status` 见 connected。
 
 验证方式：T-10（文档自查 + W-12 联调佐证）。
 
@@ -228,11 +228,11 @@ IMAGE/VIDEO/AUDIO/FILE 经 `download-file` 下载并用 base 的 `cache_*_from_b
 目标：真实环境端到端验证（连远端 Voyager 实例，Telex 内含其中）。
 
 交付物：`scripts/local-test.sh`（封装 `make deploy tunnel-test with-server` + `make web dev`，把远端
-Voyager API tunnel 到 `127.0.0.1:8000`，并含 `register-bot`/`env`/`down` 辅助）；用其 `register-bot`
+Voyager API tunnel 到 `127.0.0.1:8000`，并含 `create-bot`/`env`/`down` 辅助）；用其 `create-bot`
 颁发 bot key；hermes gateway 配 `TELEX_BASE_URL=http://127.0.0.1:8000` 接入；1:1/channel 收发、
 鉴权拒绝、媒体、回填、（v2）流式的联调记录（tr_ 报告）。
 
-完成条件：`local-test.sh up` 一键起环境；至少一条端到端路径通过；测试 bot 用毕 `unregister-bot` 清理；问题闭环或登记。
+完成条件：`local-test.sh up` 一键起环境；至少一条端到端路径通过；测试 bot 用毕在 Settings -> Bots 删除；问题闭环或登记。
 
 验证方式：HITL，结果落 `docs/test/`。
 

@@ -110,8 +110,8 @@ def _adapter(monkeypatch, extra=None):
     adapter._is_sender_authorized = lambda user_id, chat_type=None, chat_id=None: True
     rt = next(iter(adapter._runtimes.values()))
     client = StubClient(bot_id="bot1")
-    client.identities["u1"] = {"id": "u1", "email": "a@b.com", "display_name": "Alice"}
-    client.identities["u2"] = {"id": "u2", "email": "x@y.com", "display_name": "Mallory"}
+    client.identities["u1"] = {"id": "u1", "email": "a@b.com", "name": "Alice"}
+    client.identities["u2"] = {"id": "u2", "email": "x@y.com", "name": "Mallory"}
     client.conversations["c1"] = {"id": "c1", "kind": 0, "title": "Room"}
     rt.client = client
     rt.dispatcher = adp.TelexDispatcher(adapter, rt.account, client)

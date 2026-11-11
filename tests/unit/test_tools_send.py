@@ -17,7 +17,7 @@ from tests.conftest import StubClient
 def wired(monkeypatch):
     """A StubClient wired in as the tool's resolved account."""
     client = StubClient()
-    client.identities["u1"] = {"id": "u1", "email": "a@b.com", "display_name": "Alice"}
+    client.identities["u1"] = {"id": "u1", "email": "a@b.com", "name": "Alice"}
     account = accounts.resolve_account({"api_key": "k"}, "default")
     monkeypatch.setattr(tools, "_resolve_client_and_account", lambda: (client, account))
     return client, account

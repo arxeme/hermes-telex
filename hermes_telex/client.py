@@ -17,11 +17,12 @@ import threading
 import time
 from collections import OrderedDict
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlencode
 
 import aiohttp
 
 from .log import get_logger, mask_key
-from .types import OPENAPI_PREFIX
+from .types import IDENTITY_PREFIX, TELEX_PREFIX
 
 logger = get_logger("client")
 
@@ -122,6 +123,10 @@ def _stream_result(data: str) -> dict[str, Any] | None:
     return parsed.get("result")
 
 
+def _with_query(path: str, params: dict[str, Any] | None) -> str:
+    pairs = [(k, str(v)) for k, v in (params or {}).items() if v is not None and v != ""]
+    return f"{path}?{urlencode(pairs)}" if pairs else path
+
 class TelexClient:
     def __init__(self, api_key: str, base_url: str, bot_id: str | None = None):
         self.api_key = api_key
@@ -209,19 +214,16 @@ class TelexClient:
             return data if isinstance(data, dict) else {}
 
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        qs = ""
-        if params:
-            pairs = [
-                (k, str(v)) for k, v in params.items()
-                if v is not None and v != ""
-            ]
-            if pairs:
-                from urllib.parse import urlencode
-                qs = "?" + urlencode(pairs)
-        return await self._api_call("GET", f"{OPENAPI_PREFIX}{path}{qs}")
+        return await self._api_call("GET", _with_query(f"{TELEX_PREFIX}{path}", params))
 
     async def _post(self, path: str, body: Any) -> dict[str, Any]:
-        return await self._api_call("POST", f"{OPENAPI_PREFIX}{path}", body)
+        return await self._api_call("POST", f"{TELEX_PREFIX}{path}", body)
+
+    async def _identity_get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        return await self._api_call("GET", _with_query(f"{IDENTITY_PREFIX}{path}", params))
+
+    async def _identity_post(self, path: str, body: Any) -> dict[str, Any]:
+        return await self._api_call("POST", f"{IDENTITY_PREFIX}{path}", body)
 
     # -- messages -----------------------------------------------------------
 
@@ -333,7 +335,7 @@ class TelexClient:
     # -- files --------------------------------------------------------------
 
     async def upload_file(self, name: str, mime: str, data: bytes) -> dict[str, Any]:
-        url = f"{self.base_url}{OPENAPI_PREFIX}/upload-file"
+        url = f"{self.base_url}{TELEX_PREFIX}/upload-file"
         form = aiohttp.FormData()
         form.add_field("file", data, filename=name, content_type=mime or "application/octet-stream")
         timeout = aiohttp.ClientTimeout(total=FILE_TIMEOUT_S)
@@ -353,7 +355,7 @@ class TelexClient:
 
     def file_download_url(self, file_id: str) -> str:
         from urllib.parse import quote
-        return f"{self.base_url}{OPENAPI_PREFIX}/download-file?file_id={quote(file_id)}"
+        return f"{self.base_url}{TELEX_PREFIX}/download-file?file_id={quote(file_id)}"
 
     async def download_file(self, file_id: str) -> tuple[bytes, str]:
         timeout = aiohttp.ClientTimeout(total=FILE_TIMEOUT_S)
@@ -461,11 +463,11 @@ class TelexClient:
         self._conversation_cache.delete(conversation_id)
 
     async def search_identities(self, query: str, limit: int | None = None) -> list[dict[str, Any]]:
-        res = await self._get("/search-identities", {"query": query, "limit": limit})
+        res = await self._identity_get("/search", {"query": query, "limit": limit})
         return res.get("identities") or []
 
     async def get_identities(self, ids: list[str], emails: list[str]) -> list[dict[str, Any]]:
-        res = await self._post("/batch-get-identities", {"ids": ids, "emails": emails})
+        res = await self._identity_post("/batch-get", {"ids": ids, "emails": emails})
         identities = res.get("identities") or []
         for identity in identities:
             if identity.get("id"):
@@ -489,9 +491,9 @@ class TelexClient:
     async def resolve_identity(self, ident_id: str) -> dict[str, Any] | None:
         return (await self.resolve_identities([ident_id])).get(ident_id)
 
-    async def update_identity(self, display_name: str | None = None, description: str | None = None) -> dict[str, Any]:
-        body = {k: v for k, v in (("display_name", display_name), ("description", description)) if v is not None}
-        res = await self._post("/update-identity", body)
+    async def update_identity(self, name: str | None = None, description: str | None = None) -> dict[str, Any]:
+        body = {k: v for k, v in (("name", name), ("description", description)) if v is not None}
+        res = await self._identity_post("/update", body)
         identity = res.get("identity", {})
         if identity.get("id"):
             self._identity_cache.set(identity["id"], identity)
@@ -513,7 +515,7 @@ class TelexClient:
         the stream (raised as TelexError). on_activity runs for every chunk, ping
         comments included. Returns when the stream closes.
         """
-        url = f"{self.base_url}{OPENAPI_PREFIX}/subscribe"
+        url = f"{self.base_url}{TELEX_PREFIX}/subscribe"
         headers = {"x-api-key": self.api_key, "Accept": "text/event-stream"}
         # No total or read timeout on a long-lived stream: the caller's stale timer,
         # fed by on_activity, detects a half-open connection.
@@ -582,7 +584,7 @@ class TelexClient:
     async def ensure_self_id(self) -> None:
         if self._self_id:
             return
-        res = await self._get("/get-identity")
+        res = await self._identity_get("/get")
         identity = res.get("identity") or {}
         if identity.get("id"):
             self._self_id = identity["id"]
