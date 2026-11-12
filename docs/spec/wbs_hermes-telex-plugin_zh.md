@@ -21,7 +21,7 @@ hermes-agent 上以外部 platform plugin 方式提供 Voyager Telex 平台接�
   IRC 参考插件为零-patch 范本。
 - **功能对标 openclaw-telex**（`openclaw/openclaw-telex`）：需实现其全部功能（TD §12 对标清单）。
 - 入站唯一通道为 Telex `subscribe` SSE 长连接；无 webhook / relay / websocket 分支。
-- 鉴权单一 `X-API-Key`（绑定一个 Telex BOT identity）。
+- 鉴权单一 `X-API-Key`（绑定一个 Bot identity）。
 - **访问策略在插件内实现**（`enforces_own_access_policy=True`）：dm_policy(open/allowlist/pairing) +
   group_policy(disabled/allowlist/open) + sender allowlist + require_mention；**pairing 委托 hermes-agent 网关内建配对**。
 - 配置为 openclaw `channels.telex` 的 **YAML 等效**（`platforms.telex.extra`，snake_case），支持多账号 `accounts.<id>`。

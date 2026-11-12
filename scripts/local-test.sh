@@ -18,7 +18,7 @@
 #   scripts/local-test.sh status        # show process + port state
 #   scripts/local-test.sh logs [tunnel|web]
 #   scripts/local-test.sh env           # print the hermes-telex env block for this env
-#   scripts/local-test.sh create-bot    # create a custom Telex bot on the tunneled server (needs a session token)
+#   scripts/local-test.sh create-bot    # create a bot on the tunneled server (needs a session token)
 #
 # Config (env vars):
 #   VOYAGER_DIR       Path to the Voyager repo (default: auto-detected sibling checkout)
@@ -174,7 +174,7 @@ cmd_logs() {
 cmd_env() {
   cat <<EOF
 # hermes-telex env quickstart for the local (tunneled) Telex test server.
-# Create a custom bot first ($0 create-bot) and paste its key + id below.
+# Create a bot first ($0 create-bot) and paste its key + id below.
 # (Full config incl. multi-account lives in ~/.hermes/config.yaml under platforms.telex.extra — see TD 5.)
 TELEX_API_KEY=<plaintext_key from create-bot>
 TELEX_BASE_URL=$API_BASE
@@ -200,8 +200,8 @@ cmd_create_bot() {
   Get it from the browser after logging into $WEB_BASE: DevTools > Application > Local Storage > 'voyager_session'."
   command -v curl >/dev/null || die "curl not found"
   port_open 127.0.0.1 "$API_PORT" || die "API $API_BASE not reachable — run '$0 up' first."
-  log "creating custom bot '$name' (visibility=$vis) on $API_BASE ..."
-  curl -fsS -X POST "$API_BASE/voyager/v1/telex/create-bot" \
+  log "creating bot '$name' (visibility=$vis) on $API_BASE ..."
+  curl -fsS -X POST "$API_BASE/voyager/v1/identity/create-bot" \
     -H "Authorization: Bearer $token" \
     -H "Content-Type: application/json" \
     -d "{\"display_name\":\"$name\",\"description\":\"$desc\",\"visibility\":$vis}"

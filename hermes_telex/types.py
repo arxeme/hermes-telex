@@ -50,7 +50,7 @@ class MessageFlag:
 
 class IdentityKind:
     USER = 0
-    MATE_INSTANCE = 1
+    AGENT = 1
     BOT = 2
 
 
@@ -93,7 +93,8 @@ MESSAGE_STATUS_LABELS = {0: "completed", 1: "in_progress", 2: "error", 3: "abort
 CONVERSATION_KIND_LABELS = {0: "chat", 1: "channel"}
 MEMBER_ROLE_LABELS = {0: "member", 1: "admin", 2: "owner"}
 MEMBER_ROLE_BY_NAME = {name: value for value, name in MEMBER_ROLE_LABELS.items()}
-IDENTITY_KIND_LABELS = {0: "user", 1: "mate_instance", 2: "bot"}
+IDENTITY_KIND_LABELS = {0: "user", 1: "agent", 2: "bot"}
+IDENTITY_STATUS_LABELS = {0: "active", 1: "retired", 2: "inactive"}
 TOOL_STATUS_LABELS = {0: "in_progress", 1: "success", 2: "error", 3: "aborted"}
 INTERACTION_STATUS_LABELS = {0: "open", 1: "answered", 2: "skipped", 3: "expired", 4: "closed"}
 

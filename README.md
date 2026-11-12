@@ -56,8 +56,8 @@ Hermes refuses to load the plugin below the version in `plugin.yaml`'s
 
 ## Get a bot API key
 
-1. In Voyager, sign in as the owner account and add a bot under Settings -> Telex Bots -> **Custom Bots**
-   (`POST /voyager/v1/telex/create-bot`, web SDK `telexService.createBot`; see [docs/spec TD §2](docs/spec/td_hermes-telex-plugin_zh.md)).
+1. In Voyager, sign in as the owner account and add a bot under Settings -> Bots
+   (`POST /voyager/v1/identity/create-bot`, web SDK `identityService.createBot`; see [docs/spec TD §2](docs/spec/td_hermes-telex-plugin_zh.md)).
 2. Copy the one-time **plaintext API key** (shown only once) and the returned `bot.id`.
 3. The base URL is your Voyager host (default `https://voyager.ingarena.net`).
 
